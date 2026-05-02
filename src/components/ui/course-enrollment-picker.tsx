@@ -37,13 +37,13 @@ export function CourseEnrollmentPicker({
     );
     const out: CourseEnrollment[] = nextCodes.map((courseCode) => ({
       courseCode,
-      section: normalizeSection(prev[courseCode] ?? "A") || "A",
+      section: normalizeSection(prev[courseCode] ?? "") || "",
     }));
     onChange(out);
   };
 
   const setSection = (code: string, section: string) => {
-    const sec = normalizeSection(section) || "A";
+    const sec = normalizeSection(section) || "";
     onChange(
       value.map((e) =>
         e.courseCode === code ? { ...e, section: sec } : e,

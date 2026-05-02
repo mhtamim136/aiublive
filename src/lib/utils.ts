@@ -40,7 +40,7 @@ export function sectionForCourse(student: Student, courseCode: string) {
   return (
     studentEnrollments(student).find(
       (e) => e.courseCode === courseCode,
-    )?.section ?? "A"
+    )?.section ?? ""
   );
 }
 
