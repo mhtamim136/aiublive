@@ -51,7 +51,7 @@ export default function MyProfilePage() {
             size="md"
             leftIcon={<LogOut className="h-4 w-4" />}
             onClick={() => {
-              signOut();
+              void signOut();
               toast({
                 kind: "info",
                 title: "Signed out",

@@ -228,7 +228,7 @@ export function searchCourses(
 ): Course[] {
   const q = query.trim().toLowerCase();
   const exclude = new Set(options?.exclude ?? []);
-  const limit = options?.limit ?? 30;
+  const limit = options?.limit ?? 500;
   const dept = options?.department;
   const allowedPrefixes = dept ? DEPT_PREFIXES[dept] : null;
 

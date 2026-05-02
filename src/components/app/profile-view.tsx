@@ -23,7 +23,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useStore } from "@/lib/store";
 import type { Student } from "@/lib/types";
-import { avatarUrl, formatRelativeTime } from "@/lib/utils";
+import { formatRelativeTime, resolveStudentAvatar, sectionForCourse } from "@/lib/utils";
 import { useToast } from "@/components/ui/toast";
 import { formatSemester, getCourse } from "@/lib/catalog";
 import { matchReasons } from "@/lib/match";
@@ -60,7 +60,7 @@ export function ProfileView({
             <div className="flex flex-col items-start gap-4 md:flex-row md:items-end">
               <Avatar
                 name={student.name}
-                src={avatarUrl(student.handle)}
+                src={resolveStudentAvatar(student)}
                 size={104}
                 className="ring-4 ring-background shadow-lg"
               />
@@ -78,6 +78,15 @@ export function ProfileView({
                 </div>
                 <p className="text-sm text-muted-foreground">
                   @{student.handle} · {student.studentIdMasked}
+                  {student.userNumber != null && (
+                    <>
+                      {" "}
+                      ·{" "}
+                      <span className="font-medium text-foreground">
+                        #{student.userNumber}
+                      </span>
+                    </>
+                  )}
                 </p>
                 <p className="mt-1 text-sm font-medium text-foreground/90">
                   {student.vibe}
@@ -335,19 +344,25 @@ export function ProfileView({
             <ul className="space-y-2">
               {student.currentCourses.map((code) => {
                 const c = getCourse(code);
+                const sec = sectionForCourse(student, code);
                 return (
                   <li
                     key={code}
                     className="flex items-center justify-between gap-2 rounded-xl border border-border bg-card p-3"
                   >
                     <div className="min-w-0">
-                      <p className="font-mono text-sm font-medium">{code}</p>
+                      <p className="font-mono text-sm font-medium">
+                        {code}{" "}
+                        <span className="text-[10px] font-normal uppercase text-muted-foreground">
+                          · Sec {sec}
+                        </span>
+                      </p>
                       <p className="truncate text-xs text-muted-foreground">
                         {c?.title ?? "Custom course"}
                       </p>
                     </div>
                     <Link
-                      href={`/coursemates?code=${encodeURIComponent(code)}`}
+                      href={`/coursemates?code=${encodeURIComponent(code)}&section=${encodeURIComponent(sec)}`}
                       className="shrink-0 text-xs font-medium text-primary hover:underline"
                     >
                       Coursemates

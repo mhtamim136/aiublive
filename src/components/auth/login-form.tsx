@@ -81,7 +81,7 @@ export function LoginForm() {
       if (result.ok) {
         toast({
           kind: "success",
-          title: `Welcome back, ${result.account.name.split(" ")[0]}`,
+          title: `Welcome back, ${result.name.split(" ")[0]}`,
         });
         router.replace(next);
         return;
@@ -206,7 +206,7 @@ export function LoginForm() {
         </Link>
         <span className="text-muted-foreground">
           <Lock className="-mt-0.5 mr-1 inline h-3 w-3" />
-          Hashed locally with PBKDF2
+          Secured with bcrypt + JWT (HttpOnly cookie)
         </span>
       </div>
     </div>

@@ -3,10 +3,10 @@
 import * as React from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useStore } from "@/lib/store";
-import { hasAnyAccount } from "@/lib/accounts";
 
 export function AuthGate({ children }: { children: React.ReactNode }) {
   const me = useStore((s) => s.me);
+  const sessionChecked = useStore((s) => s.sessionChecked);
   const router = useRouter();
   const pathname = usePathname();
   const [hydrated, setHydrated] = React.useState(false);
@@ -16,16 +16,17 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   }, []);
 
   React.useEffect(() => {
-    if (!hydrated || me) return;
-    // Not signed in. Decide where to send them.
-    const accountExists = hasAnyAccount();
-    const dest = accountExists
-      ? `/login?next=${encodeURIComponent(pathname || "/dashboard")}`
-      : "/onboarding";
-    router.replace(dest);
-  }, [hydrated, me, router, pathname]);
+    if (!hydrated) return;
+    useStore.getState().refreshSession().catch(() => null);
+  }, [hydrated]);
 
-  if (!hydrated || !me) {
+  React.useEffect(() => {
+    if (!hydrated || !sessionChecked) return;
+    if (me) return;
+    router.replace(`/login?next=${encodeURIComponent(pathname || "/dashboard")}`);
+  }, [hydrated, sessionChecked, me, router, pathname]);
+
+  if (!hydrated || !sessionChecked || !me) {
     return <Loading />;
   }
 

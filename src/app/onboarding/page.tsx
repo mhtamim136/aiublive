@@ -25,7 +25,7 @@ import { PasswordStrengthMeter } from "@/components/auth/password-strength";
 import { Select } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { ChipInput } from "@/components/ui/chip-input";
-import { CoursePicker } from "@/components/ui/course-picker";
+import { CourseEnrollmentPicker } from "@/components/ui/course-enrollment-picker";
 import {
   departments,
   deriveLevel,
@@ -37,9 +37,12 @@ import {
   skillSuggestions,
 } from "@/lib/catalog";
 import { useStore } from "@/lib/store";
-import { createAccount, findAccount } from "@/lib/accounts";
 import { evaluatePassword } from "@/lib/crypto";
-import type { Department, Student } from "@/lib/types";
+import type {
+  CourseEnrollment,
+  Department,
+  Student,
+} from "@/lib/types";
 import { useToast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 
@@ -62,8 +65,8 @@ const sideContent: Record<
     highlight: (
       <>
         Your AIUB student ID is your username on AIUB Live. Pick a strong
-        password — it's hashed with PBKDF2-SHA256 and never sent in
-        plaintext. We never touch the AIUB portal.
+        password — the server hashes it with bcrypt over HTTPS-ready cookies
+        and never stores plaintext passwords. We never touch the AIUB portal.
       </>
     ),
   },
@@ -132,7 +135,7 @@ type FormState = {
   handle: string;
   department: Department | "";
   semester: number;
-  currentCourses: string[];
+  courseEnrollments: CourseEnrollment[];
   skills: string[];
   interests: string[];
   openTo: Student["openTo"];
@@ -150,7 +153,7 @@ const initialForm: FormState = {
   handle: "",
   department: "",
   semester: 1,
-  currentCourses: [],
+  courseEnrollments: [],
   skills: [],
   interests: [],
   openTo: [],
@@ -193,17 +196,41 @@ function formatStudentIdInput(raw: string) {
 
 export default function OnboardingPage() {
   const router = useRouter();
-  const setMe = useStore((s) => s.setMe);
+  const refreshSession = useStore((s) => s.refreshSession);
   const me = useStore((s) => s.me);
   const { toast } = useToast();
   const [stepIndex, setStepIndex] = React.useState(0);
   const [form, setForm] = React.useState<FormState>(initialForm);
   const [errors, setErrors] = React.useState<Record<string, string>>({});
   const [submitting, setSubmitting] = React.useState(false);
+  const [remoteIdTaken, setRemoteIdTaken] = React.useState(false);
 
   React.useEffect(() => {
     if (me) router.replace("/dashboard");
   }, [me, router]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    if (!studentIdRegex.test(form.studentIdRaw)) {
+      setRemoteIdTaken(false);
+      return undefined;
+    }
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/auth/exists?studentId=${encodeURIComponent(form.studentIdRaw)}`,
+          { credentials: "include" },
+        );
+        const j = await res.json().catch(() => ({}));
+        if (!cancelled) setRemoteIdTaken(Boolean(j.exists));
+      } catch {
+        if (!cancelled) setRemoteIdTaken(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [form.studentIdRaw]);
 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
@@ -223,7 +250,7 @@ export default function OnboardingPage() {
     if (i === 0) {
       if (!studentIdRegex.test(form.studentIdRaw))
         e.studentIdRaw = "Format: XX-XXXXX-X (e.g., 22-12345-1)";
-      else if (findAccount(form.studentIdRaw))
+      else if (remoteIdTaken)
         e.studentIdRaw =
           "An account already exists with this ID. Sign in instead.";
       if (!passwordReport.passed)
@@ -243,8 +270,8 @@ export default function OnboardingPage() {
         e.semester = "Pick your current semester";
     }
     if (i === 3) {
-      if (form.currentCourses.length === 0)
-        e.currentCourses = "Add at least 1 course you're taking now";
+      if (form.courseEnrollments.length === 0)
+        e.courseEnrollments = "Add at least 1 course you're taking now";
     }
     if (i === 4) {
       if (form.skills.length < 2) e.skills = "At least 2 skills, please";
@@ -272,52 +299,72 @@ export default function OnboardingPage() {
     if (!form.department) return;
     setSubmitting(true);
     try {
-      const id = `me_${form.handle || Math.random().toString(36).slice(2, 8)}`;
       const dept = departments.find((d) => d.code === form.department)!;
-      const newMe: Student = {
-        id,
-        name: form.name.trim(),
-        handle: form.handle.trim().toLowerCase(),
-        studentIdMasked: maskId(form.studentIdRaw),
-        department: form.department,
-        faculty: dept.faculty,
-        semester: form.semester,
-        level: deriveLevel(form.semester),
-        bio: form.bio.trim(),
-        vibe:
-          form.vibe.trim() ||
-          "Just another AIUB student finding their tribe.",
-        skills: form.skills,
-        interests: form.interests,
-        currentCourses: form.currentCourses,
-        projects: [],
-        achievements: [],
-        openTo: form.openTo,
-        isMentor: form.isMentor,
-        links: form.links,
-        joinedAt: new Date().toISOString(),
-      };
-
-      const result = await createAccount({
-        studentId: form.studentIdRaw,
-        password: form.password,
-        profile: newMe,
+      const res = await fetch("/api/auth/signup", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          studentId: form.studentIdRaw,
+          password: form.password,
+          profile: {
+            name: form.name.trim(),
+            handle: form.handle.trim().toLowerCase(),
+            department: form.department,
+            faculty: dept.faculty,
+            semester: form.semester,
+            bio: form.bio.trim(),
+            vibe:
+              form.vibe.trim() ||
+              "Just another AIUB student finding their tribe.",
+            isMentor: form.isMentor,
+            github: form.links.github ?? undefined,
+            linkedin: form.links.linkedin ?? undefined,
+            website: form.links.website ?? undefined,
+            skills: form.skills,
+            interests: form.interests,
+            openTo: form.openTo,
+            courseEnrollments: form.courseEnrollments,
+            projects: [],
+            achievements: [],
+          },
+        }),
       });
 
-      if (!result.ok) {
-        if (result.code === "id-taken") {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok !== true) {
+        const code = String(data.code ?? "");
+        if (code === "id-taken" || code === "duplicate") {
           setStepIndex(0);
-          setErrors({ studentIdRaw: result.message });
-        } else if (result.code === "handle-taken") {
+          setErrors({
+            studentIdRaw:
+              String(data.message) ||
+              "That student ID already has an account. Sign in.",
+          });
+        } else if (code === "handle-taken") {
           setStepIndex(1);
-          setErrors({ handle: result.message });
+          setErrors({
+            handle: String(data.message) || "This handle is taken.",
+          });
+        } else if (code === "weak-password") {
+          setErrors({ password: String(data.message) || "Weak password." });
+          setStepIndex(0);
+        } else if (code === "validation") {
+          toast({
+            kind: "error",
+            title: String(data.message) || "Check your inputs",
+          });
         } else {
-          toast({ kind: "error", title: result.message });
+          toast({
+            kind: "error",
+            title: String(data.message) || "Could not complete signup.",
+          });
         }
         return;
       }
 
-      setMe(newMe, result.account.studentId);
+      await refreshSession();
+
       toast({
         kind: "success",
         title: "Welcome to AIUB Live!",
@@ -331,8 +378,7 @@ export default function OnboardingPage() {
 
   const dept = form.department ? (form.department as Department) : undefined;
   const derivedLevel = deriveLevel(form.semester);
-  const idTaken =
-    studentIdRegex.test(form.studentIdRaw) && !!findAccount(form.studentIdRaw);
+  const idTaken = studentIdRegex.test(form.studentIdRaw) && remoteIdTaken;
 
   return (
     <StepShell
@@ -343,8 +389,8 @@ export default function OnboardingPage() {
       sideFootnote={
         <span className="inline-flex items-center gap-1.5">
           <ShieldCheck className="h-3.5 w-3.5" />
-          Passwords hashed locally with PBKDF2-SHA256 · brute-force lockouts
-          built in.
+          Passwords hashed on the server (bcrypt) · HTTPS-ready cookies &
+          brute-force lockouts supported.
         </span>
       }
     >
@@ -352,8 +398,8 @@ export default function OnboardingPage() {
         <div className="space-y-5">
           <StepHeader icon={<KeyRound />} title="Account & security" />
           <p className="text-sm text-muted-foreground">
-            Your AIUB student ID is your username. Pick a strong password —
-            it's hashed before being saved and we never see it.
+            Your AIUB student ID is your username. Pick a strong password — it’s
+            never stored as plain text on the database.
           </p>
 
           <div>
@@ -566,14 +612,14 @@ export default function OnboardingPage() {
             coursemates.
           </p>
 
-          <CoursePicker
-            value={form.currentCourses}
-            onChange={(next) => update("currentCourses", next)}
+          <CourseEnrollmentPicker
+            value={form.courseEnrollments}
+            onChange={(next) => update("courseEnrollments", next)}
             department={dept}
             max={8}
           />
-          {errors.currentCourses && (
-            <p className="text-xs text-danger">{errors.currentCourses}</p>
+          {errors.courseEnrollments && (
+            <p className="text-xs text-danger">{errors.courseEnrollments}</p>
           )}
         </div>
       )}

@@ -14,7 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useStore } from "@/lib/store";
 import type { Student } from "@/lib/types";
-import { avatarUrl, cn } from "@/lib/utils";
+import { cn, resolveStudentAvatar } from "@/lib/utils";
 import { useToast } from "@/components/ui/toast";
 
 export function StudentCard({
@@ -51,7 +51,7 @@ export function StudentCard({
         >
           <Avatar
             name={student.name}
-            src={avatarUrl(student.handle)}
+            src={resolveStudentAvatar(student)}
             size={48}
             ring
           />

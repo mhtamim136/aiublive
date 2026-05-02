@@ -11,6 +11,7 @@ import { StudentCard } from "@/components/app/student-card";
 import { Tabs } from "@/components/ui/tabs";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Button } from "@/components/ui/button";
+import type { Student } from "@/lib/types";
 
 type TabKey = "connected" | "pending" | "saved" | "suggested";
 
@@ -20,16 +21,62 @@ export default function ConnectionsPage() {
   const acceptConnection = useStore((s) => s.acceptConnection);
   const bookmarks = useStore((s) => s.bookmarks);
   const [tab, setTab] = React.useState<TabKey>("connected");
+  const [remote, setRemote] = React.useState<Record<string, Student>>({});
+
+  const relatedIds = React.useMemo(() => {
+    const ids = new Set<string>();
+    bookmarks.forEach((b) => ids.add(b));
+    Object.entries(connections).forEach(([sid, st]) => {
+      if (st === "connected" || st === "pending") ids.add(sid);
+    });
+    return [...ids].filter((x) => /^[0-9]+$/.test(x));
+  }, [bookmarks, connections]);
+
+  React.useEffect(() => {
+    if (!relatedIds.length) {
+      setRemote({});
+      return undefined;
+    }
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/users/batch?ids=${encodeURIComponent(relatedIds.join(","))}`,
+          { credentials: "include", cache: "no-store" },
+        );
+        const data = await res.json().catch(() => ({}));
+        if (!alive || (data.ok as boolean) !== true) return;
+        const map: Record<string, Student> = {};
+        (data.students as Student[]).forEach((s) => {
+          map[s.id] = s;
+        });
+        setRemote(map);
+      } catch {
+        if (alive) setRemote({});
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [relatedIds]);
 
   if (!me) return null;
 
-  const connected = mockStudents.filter(
-    (s) => connections[s.id] === "connected",
-  );
-  const pending = mockStudents.filter(
-    (s) => connections[s.id] === "pending",
-  );
-  const saved = mockStudents.filter((s) => bookmarks.includes(s.id));
+  const resolve = (id: string) => remote[id] ?? mockStudents.find((s) => s.id === id);
+
+  const connected = Object.keys(connections)
+    .filter((id) => connections[id] === "connected")
+    .map((id) => resolve(id))
+    .filter(Boolean) as Student[];
+
+  const pending = Object.keys(connections)
+    .filter((id) => connections[id] === "pending")
+    .map((id) => resolve(id))
+    .filter(Boolean) as Student[];
+
+  const saved = bookmarks
+    .map((id) => resolve(id))
+    .filter(Boolean) as Student[];
   const suggested = rankBy(mockStudents, (s) => matchScore(me, s))
     .filter(
       (r) => r.score > 0 && (connections[r.item.id] ?? "none") === "none",
@@ -128,7 +175,7 @@ export default function ConnectionsPage() {
                   </Link>
                   <Button
                     size="sm"
-                    onClick={() => acceptConnection(s.id)}
+                    onClick={() => void acceptConnection(s.id)}
                     leftIcon={<UserCheck className="h-3.5 w-3.5" />}
                   >
                     Mark accepted

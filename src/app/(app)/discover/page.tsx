@@ -62,9 +62,41 @@ function DiscoverInner() {
   const [sort, setSort] = React.useState<SortKey>("match");
   const [showFilters, setShowFilters] = React.useState(false);
 
+  /** Directory from MySQL (`/api/users/search`), falling back to mock personas. */
+  const [students, setStudents] = React.useState<Student[]>(mockStudents);
+
+  React.useEffect(() => {
+    if (!me) return;
+    let alive = true;
+    (async () => {
+      try {
+        const qs = new URLSearchParams();
+        if (dept !== "all") qs.set("department", dept);
+        if (q.trim()) qs.set("q", q.trim());
+        qs.set("limit", "90");
+        const res = await fetch(`/api/users/search?${qs}`, {
+          credentials: "include",
+          cache: "no-store",
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!alive) return;
+        if ((data.ok as boolean) === true && Array.isArray(data.students)) {
+          setStudents(data.students as Student[]);
+        } else if (alive) {
+          setStudents(mockStudents);
+        }
+      } catch {
+        if (alive) setStudents(mockStudents);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [me, q, dept]);
+
   if (!me) return null;
 
-  const filtered = mockStudents.filter((s) => {
+  const filtered = students.filter((s) => {
     if (s.id === me.id) return false;
     if (q) {
       const needle = q.toLowerCase();
@@ -74,6 +106,8 @@ function DiscoverInner() {
         s.bio,
         s.vibe,
         s.department,
+        String(s.userNumber ?? ""),
+        s.studentIdMasked,
         ...s.skills,
         ...s.interests,
         ...s.currentCourses,
@@ -132,7 +166,7 @@ function DiscoverInner() {
         <Input
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder="Search by name, skill, course, or department…"
+          placeholder="Search by name, handle, #user id, student ID, skills, or courses…"
           leftIcon={<Search className="h-4 w-4" />}
           className="lg:flex-1"
         />

@@ -2,46 +2,57 @@
 
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
-import type {
-  ConnectionStatus,
-  ProjectPost,
-  Student,
-} from "./types";
+import type { ConnectionStatus, ProjectPost, Student } from "./types";
 import { mockProjects } from "./mock-data";
-import {
-  attemptLogin,
-  findAccount,
-  hasAnyAccount,
-  type LoginResult,
-  updateAccountProfile,
-} from "./accounts";
 
 type Message = {
   id: string;
-  fromId: string; // "me" or student id
+  fromId: string;
   toId: string;
   text: string;
-  at: string; // ISO
+  at: string;
 };
+
+export type LoginResult =
+  | { ok: true; name: string }
+  | {
+      ok: false;
+      /** Machine-readable hint from `/api/auth/login` or networking. */
+      code: string;
+      message: string;
+      lockedUntil?: number;
+      remainingAttempts?: number;
+    };
+
+async function readJsonBody(res: Response): Promise<Record<string, unknown>> {
+  try {
+    const j: unknown = await res.json();
+    return typeof j === "object" && j !== null ? (j as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
 
 type State = {
   me: Student | null;
-  signedInId: string | null; // canonical AIUB student ID of the active session
+  signedInId: string | null;
   hasOnboarded: boolean;
-  connections: Record<string, ConnectionStatus>; // by student id
-  bookmarks: string[]; // student ids
-  projects: ProjectPost[]; // includes user-created
-  threads: Record<string, Message[]>; // by student id
-  readNotifications: string[]; // notification ids that are read
+  connections: Record<string, ConnectionStatus>;
+  bookmarks: string[];
+  projects: ProjectPost[];
+  threads: Record<string, Message[]>;
+  readNotifications: string[];
+  sessionChecked: boolean;
   setMe: (s: Student, signedInId: string) => void;
-  updateMe: (patch: Partial<Student>) => void;
+  updateMe: (patch: Partial<Student>) => Promise<boolean>;
   signIn: (studentId: string, password: string) => Promise<LoginResult>;
-  signOut: () => void;
-  /** Wipe everything including stored accounts. */
+  signOut: () => Promise<void>;
   reset: () => void;
-  requestConnection: (id: string) => void;
-  acceptConnection: (id: string) => void;
-  toggleBookmark: (id: string) => void;
+  refreshSession: () => Promise<boolean>;
+  requestConnection: (id: string) => Promise<void>;
+  acceptConnection: (id: string) => Promise<void>;
+  toggleBookmark: (id: string) => Promise<void>;
   createProject: (
     p: Omit<ProjectPost, "id" | "createdAt" | "members" | "status" | "ownerId"> & {
       ownerId?: string;
@@ -64,38 +75,153 @@ export const useStore = create<State>()(
       projects: mockProjects,
       threads: {},
       readNotifications: [],
+      sessionChecked: false,
+
       setMe: (s, signedInId) =>
         set({ me: s, signedInId, hasOnboarded: true }),
-      updateMe: (patch) =>
-        set((state) => {
-          if (!state.me) return state;
-          const next = { ...state.me, ...patch };
-          // Mirror profile changes back to the persisted account snapshot
-          // so they survive a sign-out + sign-in cycle.
-          updateAccountProfile(next);
-          return { me: next };
-        }),
-      signIn: async (studentId, password) => {
-        const result = await attemptLogin(studentId, password);
-        if (result.ok) {
-          set({
-            me: result.account.profile,
-            signedInId: result.account.studentId,
-            hasOnboarded: true,
+
+      refreshSession: async () => {
+        try {
+          const res = await fetch("/api/auth/me", {
+            credentials: "include",
+            cache: "no-store",
           });
+          const data = await readJsonBody(res);
+          if (!res.ok || data.ok !== true) {
+            set({
+              me: null,
+              signedInId: null,
+              hasOnboarded: false,
+              connections: {},
+              bookmarks: [],
+              sessionChecked: true,
+            });
+            return false;
+          }
+          set({
+            me: data.student as Student,
+            signedInId: String(data.signedStudentId ?? ""),
+            hasOnboarded: true,
+            connections: (data.connections as Record<
+              string,
+              ConnectionStatus
+            >) ?? {},
+            bookmarks: (data.bookmarks as string[]) ?? [],
+            sessionChecked: true,
+          });
+          return true;
+        } catch {
+          set((s) => ({ ...s, sessionChecked: true }));
+          return false;
         }
-        return result;
       },
-      signOut: () =>
+
+      updateMe: async (patch) => {
+        const me = get().me;
+        if (!me) return false;
+        const optimistic = { ...me, ...patch };
+        set({ me: optimistic });
+        try {
+          const res = await fetch("/api/me/profile", {
+            method: "PATCH",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(patch),
+          });
+          const data = await readJsonBody(res);
+          if (!res.ok || data.ok !== true) throw new Error("save failed");
+          set({ me: data.student as Student });
+          return true;
+        } catch {
+          set({ me }); // rollback visuals
+          return false;
+        }
+      },
+
+      signIn: async (studentIdRaw, password) => {
+        try {
+          const res = await fetch("/api/auth/login", {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              studentId: studentIdRaw,
+              password,
+            }),
+          });
+          const data = await readJsonBody(res);
+
+          if (data.ok === true) {
+            set({
+              me: data.student as Student,
+              signedInId: String(data.signedStudentId ?? ""),
+              hasOnboarded: true,
+              connections: (data.connections as Record<
+                string,
+                ConnectionStatus
+              >) ?? {},
+              bookmarks: (data.bookmarks as string[]) ?? [],
+              sessionChecked: true,
+            });
+            return {
+              ok: true,
+              name: String(data.name ?? (data.student as Student)?.name ?? ""),
+            };
+          }
+
+          const codeRaw = String(data.code ?? "");
+          const failCode =
+            codeRaw === "wrong-password"
+              ? "wrong-password"
+              : codeRaw === "locked"
+                ? "locked"
+                : ("wrong-credentials" as const);
+
+          return {
+            ok: false,
+            code: failCode,
+            message: String(
+              data.message ??
+                "We couldn't find an account with that ID and password.",
+            ),
+            lockedUntil:
+              typeof data.lockedUntil === "number" ?
+                data.lockedUntil
+              : undefined,
+            remainingAttempts:
+              typeof data.remainingAttempts === "number" ?
+                data.remainingAttempts
+              : undefined,
+          };
+        } catch {
+          return {
+            ok: false,
+            code: "server",
+            message: "Network error — try again.",
+          };
+        }
+      },
+
+      signOut: async () => {
+        try {
+          await fetch("/api/auth/logout", {
+            method: "POST",
+            credentials: "include",
+          });
+        } catch {
+          /* ignore */
+        }
         set({
           me: null,
           signedInId: null,
-          // Keep bookmarks, projects, etc. tied to localStorage; they'll
-          // be visible to whoever signs in next on this device. For a
-          // single-user device this is the right behavior.
-        }),
+          hasOnboarded: false,
+          connections: {},
+          bookmarks: [],
+          sessionChecked: true,
+        });
+      },
+
       reset: () => {
-        // Clears the live state. Account credentials are wiped separately.
         set({
           me: null,
           signedInId: null,
@@ -105,22 +231,105 @@ export const useStore = create<State>()(
           projects: mockProjects,
           threads: {},
           readNotifications: [],
+          sessionChecked: true,
         });
       },
-      requestConnection: (id) =>
+
+      requestConnection: async (id) => {
+        const numeric = /^[0-9]+$/.test(id);
+        if (!numeric) {
+          set((state) => ({
+            connections: { ...state.connections, [id]: "pending" },
+          }));
+          return;
+        }
+        try {
+          const res = await fetch("/api/connections", {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ peerUserId: id, action: "request" }),
+          });
+          const data = await readJsonBody(res);
+          if (res.ok && data.ok === true) {
+            set({
+              connections: (data.connections as Record<
+                string,
+                ConnectionStatus
+              >) ?? { ...get().connections, [id]: "pending" },
+            });
+            return;
+          }
+        } catch {
+          //
+        }
         set((state) => ({
           connections: { ...state.connections, [id]: "pending" },
-        })),
-      acceptConnection: (id) =>
+        }));
+      },
+
+      acceptConnection: async (id) => {
+        if (!/^[0-9]+$/.test(id)) {
+          set((state) => ({
+            connections: { ...state.connections, [id]: "connected" },
+          }));
+          return;
+        }
+        try {
+          const res = await fetch("/api/connections", {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              peerUserId: id,
+              action: "complete-outgoing-demo",
+            }),
+          });
+          const data = await readJsonBody(res);
+          if (res.ok && data.ok === true) {
+            set({
+              connections: (data.connections as Record<
+                string,
+                ConnectionStatus
+              >) ?? { ...get().connections, [id]: "connected" },
+            });
+            return;
+          }
+        } catch {
+          //
+        }
         set((state) => ({
           connections: { ...state.connections, [id]: "connected" },
-        })),
-      toggleBookmark: (id) =>
+        }));
+      },
+
+      toggleBookmark: async (id) => {
+        const on = !get().bookmarks.includes(id);
+        const prev = [...get().bookmarks];
         set((state) => ({
-          bookmarks: state.bookmarks.includes(id)
-            ? state.bookmarks.filter((x) => x !== id)
-            : [...state.bookmarks, id],
-        })),
+          bookmarks: on ?
+              [...state.bookmarks, id]
+            : state.bookmarks.filter((x) => x !== id),
+        }));
+        if (!/^[0-9]+$/.test(id)) return;
+        try {
+          const res = await fetch("/api/bookmarks", {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ targetUserId: id, on }),
+          });
+          const data = await readJsonBody(res);
+          if (res.ok && data.ok === true) {
+            set({ bookmarks: (data.bookmarks as string[]) ?? get().bookmarks });
+            return;
+          }
+          throw new Error("bookmark failed");
+        } catch {
+          set({ bookmarks: prev });
+        }
+      },
+
       createProject: (p) => {
         const id = `proj_${Math.random().toString(36).slice(2, 8)}`;
         const me = get().me;
@@ -141,14 +350,16 @@ export const useStore = create<State>()(
         set((state) => ({ projects: [post, ...state.projects] }));
         return post;
       },
+
       joinProject: (projectId, studentId) =>
         set((state) => ({
           projects: state.projects.map((p) =>
-            p.id === projectId && !p.members.includes(studentId)
-              ? { ...p, members: [...p.members, studentId] }
-              : p,
+            p.id === projectId && !p.members.includes(studentId) ?
+              { ...p, members: [...p.members, studentId] }
+            : p,
           ),
         })),
+
       sendMessage: (toId, text) =>
         set((state) => {
           const me = state.me;
@@ -165,6 +376,7 @@ export const useStore = create<State>()(
             threads: { ...state.threads, [toId]: [...existing, msg] },
           };
         }),
+
       markNotificationsRead: (ids) =>
         set((state) => ({
           readNotifications: Array.from(
@@ -175,11 +387,13 @@ export const useStore = create<State>()(
         set(() => ({ readNotifications: [...ids] })),
     }),
     {
-      name: "aiub-live-store-v1",
+      name: "aiub-live-store-v2-api",
+      partialize: (s) => ({
+        projects: s.projects,
+        threads: s.threads,
+        readNotifications: s.readNotifications,
+      }),
       storage: createJSONStorage(() => localStorage),
     },
   ),
 );
-
-// Re-export account helpers so consumers don't need a second import
-export { findAccount, hasAnyAccount };

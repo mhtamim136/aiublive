@@ -1,5 +1,6 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
+import type { CourseEnrollment, Student } from "@/lib/types";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -15,6 +16,32 @@ export function initials(name: string) {
 export function avatarUrl(seed: string) {
   const safe = encodeURIComponent(seed || "aiub");
   return `https://api.dicebear.com/9.x/notionists/svg?seed=${safe}&backgroundType=gradientLinear&backgroundColor=b6e3f4,c0aede,d1d4f9,ffd5dc,ffdfbf`;
+}
+
+/** Dicebear fallback or uploaded avatar path/url. */
+export function resolveStudentAvatar(
+  student: Pick<Student, "handle" | "profileImageUrl">,
+) {
+  const u = student.profileImageUrl?.trim();
+  if (u)
+    return u.startsWith("http") || u.startsWith("/") ? u : `/${u.replace(/^\/+/, "")}`;
+  return avatarUrl(student.handle);
+}
+
+export function studentEnrollments(student: Student): CourseEnrollment[] {
+  if (student.courseEnrollments?.length) return student.courseEnrollments;
+  return student.currentCourses.map((courseCode) => ({
+    courseCode,
+    section: "A",
+  }));
+}
+
+export function sectionForCourse(student: Student, courseCode: string) {
+  return (
+    studentEnrollments(student).find(
+      (e) => e.courseCode === courseCode,
+    )?.section ?? "A"
+  );
 }
 
 export function formatRelativeTime(date: Date | string | number) {

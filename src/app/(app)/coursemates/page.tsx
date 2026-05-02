@@ -8,12 +8,13 @@ import { BookOpen, Plus, Users2 } from "lucide-react";
 import { PageHeader } from "@/components/app/page-header";
 import { useStore } from "@/lib/store";
 import { mockStudents } from "@/lib/mock-data";
-import { courses, getCourse } from "@/lib/catalog";
+import { getCourse } from "@/lib/catalog";
 import { StudentCard } from "@/components/app/student-card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
-import { cn } from "@/lib/utils";
+import { cn, sectionForCourse, studentEnrollments } from "@/lib/utils";
+import type { Student } from "@/lib/types";
 
 export default function CoursematesPage() {
   return (
@@ -23,6 +24,8 @@ export default function CoursematesPage() {
   );
 }
 
+type SectionMode = "all" | "section";
+
 function Inner() {
   const me = useStore((s) => s.me);
   const updateMe = useStore((s) => s.updateMe);
@@ -30,13 +33,54 @@ function Inner() {
   const router = useRouter();
 
   const codeParam = params.get("code");
+  const sectionParam = params.get("section");
+
   const [activeCode, setActiveCode] = React.useState<string | null>(
     codeParam ?? me?.currentCourses[0] ?? null,
+  );
+  const [mates, setMates] = React.useState<Student[]>([]);
+  const [sectionMode, setSectionMode] = React.useState<SectionMode>(
+    sectionParam ? "section" : "all",
   );
 
   React.useEffect(() => {
     if (codeParam && codeParam !== activeCode) setActiveCode(codeParam);
   }, [codeParam, activeCode]);
+
+  React.useEffect(() => {
+    if (!me || !activeCode) {
+      setMates([]);
+      return;
+    }
+    let alive = true;
+    (async () => {
+      try {
+        const qs = new URLSearchParams({ course: activeCode });
+        if (sectionMode === "section") {
+          const sec =
+            (sectionParam && sectionParam.trim()) ||
+            sectionForCourse(me, activeCode);
+          qs.set("section", sec);
+        }
+        const res = await fetch(`/api/coursemates?${qs}`, {
+          credentials: "include",
+          cache: "no-store",
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!alive) return;
+        if ((data.ok as boolean) === true && Array.isArray(data.students)) {
+          setMates(data.students as Student[]);
+        } else {
+          setMates([]);
+        }
+      } catch {
+        if (alive) setMates([]);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [me, activeCode, sectionMode, sectionParam]);
 
   if (!me) return null;
 
@@ -46,18 +90,16 @@ function Inner() {
     setActiveCode(code);
     const url = new URL(window.location.href);
     url.searchParams.set("code", code);
-    router.replace(`?code=${encodeURIComponent(code)}`, { scroll: false });
+    if (sectionMode === "section") {
+      url.searchParams.set("section", sectionForCourse(me, code));
+    } else {
+      url.searchParams.delete("section");
+    }
+    router.replace(`${url.pathname}?${url.searchParams}`, { scroll: false });
   };
-
-  const mates = activeCode
-    ? mockStudents.filter(
-        (s) => s.id !== me.id && s.currentCourses.includes(activeCode),
-      )
-    : [];
 
   const courseInfo = activeCode ? getCourse(activeCode) : null;
 
-  // Suggestions: courses the user isn't taking but other students share with them
   const suggestionMap = new Map<string, number>();
   mockStudents.forEach((s) => {
     if (s.id === me.id) return;
@@ -72,6 +114,8 @@ function Inner() {
     .slice(0, 4)
     .map(([code, count]) => ({ code, count }));
 
+  const mySec = activeCode ? sectionForCourse(me, activeCode) : "";
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -81,14 +125,14 @@ function Inner() {
             See who's in your <span className="gradient-text">classroom</span>
           </>
         }
-        description="Pick a course you're taking — see everyone else in it this semester."
+        description="Pick a course — browse everyone enrolled, or filter down to your exact section mates."
       />
 
       {myCourses.length === 0 ? (
         <EmptyState
           icon={<BookOpen className="h-5 w-5" />}
           title="Add your current courses first"
-          description="Once you add courses, this page becomes your fastest way to find classmates and study circles."
+          description="Once you add courses (and sections) on your profile, this page shows real classmates from the directory."
           action={
             <Link href="/profile/me">
               <Button>Go to profile</Button>
@@ -101,10 +145,9 @@ function Inner() {
             <div className="flex w-max items-center gap-2 md:flex-wrap">
               {myCourses.map((code) => {
                 const c = getCourse(code);
-                const count = mockStudents.filter(
-                  (s) => s.id !== me.id && s.currentCourses.includes(code),
-                ).length;
                 const active = code === activeCode;
+                const count =
+                  active && mates.length ? mates.length : undefined;
                 return (
                   <button
                     key={code}
@@ -118,6 +161,9 @@ function Inner() {
                   >
                     <div className="min-w-0">
                       <p className="font-mono text-sm font-semibold">{code}</p>
+                      <p className="truncate text-[10px] text-muted-foreground">
+                        Sec {sectionForCourse(me, code)}
+                      </p>
                       <p className="truncate text-xs text-muted-foreground">
                         {c?.title ?? "Custom course"}
                       </p>
@@ -127,7 +173,7 @@ function Inner() {
                       className="shrink-0"
                     >
                       <Users2 className="h-3 w-3" />
-                      {count}
+                      {count ?? "—"}
                     </Badge>
                   </button>
                 );
@@ -137,6 +183,39 @@ function Inner() {
 
           {activeCode && (
             <div className="space-y-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm"
+                  variant={sectionMode === "all" ? "primary" : "outline"}
+                  onClick={() => {
+                    setSectionMode("all");
+                    const url = new URL(window.location.href);
+                    url.searchParams.delete("section");
+                    router.replace(
+                      `${url.pathname}?${url.searchParams}`,
+                      { scroll: false },
+                    );
+                  }}
+                >
+                  All coursemates
+                </Button>
+                <Button
+                  size="sm"
+                  variant={sectionMode === "section" ? "primary" : "outline"}
+                  onClick={() => {
+                    setSectionMode("section");
+                    const url = new URL(window.location.href);
+                    url.searchParams.set("section", mySec);
+                    router.replace(
+                      `${url.pathname}?${url.searchParams}`,
+                      { scroll: false },
+                    );
+                  }}
+                >
+                  My section ({mySec})
+                </Button>
+              </div>
+
               <div className="rounded-2xl border border-border bg-gradient-to-r from-primary/[0.06] to-accent/[0.06] p-5">
                 <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
                   <div>
@@ -147,8 +226,9 @@ function Inner() {
                       {courseInfo?.title ?? "Your course"}
                     </h2>
                     <p className="mt-1 text-sm text-muted-foreground">
-                      {mates.length} classmates from your semester are on AIUB
-                      Live.
+                      {sectionMode === "section" ?
+                        `${mates.length} students in section ${mySec} on AIUB Live.`
+                      : `${mates.length} students share this course on AIUB Live.`}
                     </p>
                   </div>
                   <div className="flex gap-2">
@@ -170,7 +250,7 @@ function Inner() {
               {mates.length === 0 ? (
                 <EmptyState
                   title="No classmates here yet"
-                  description="Be the first from your course on AIUB Live — invite a classmate."
+                  description="Invite someone from this course/section to join AIUB Live — or widen to all coursemates."
                 />
               ) : (
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -194,11 +274,18 @@ function Inner() {
                 {suggestions.map((s) => (
                   <button
                     key={s.code}
-                    onClick={() => {
-                      updateMe({
-                        currentCourses: [...me.currentCourses, s.code],
+                    onClick={async () => {
+                      const en = studentEnrollments(me);
+                      if (en.some((e) => e.courseCode === s.code)) {
+                        setActive(s.code);
+                        return;
+                      }
+                      const next = [...en, { courseCode: s.code, section: "A" }];
+                      const ok = await updateMe({
+                        courseEnrollments: next,
+                        currentCourses: next.map((e) => e.courseCode),
                       });
-                      setActive(s.code);
+                      if (ok) setActive(s.code);
                     }}
                     className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium transition hover:border-primary/40 hover:bg-primary/5"
                   >

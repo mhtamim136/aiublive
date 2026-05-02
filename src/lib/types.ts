@@ -22,6 +22,12 @@ export type Course = {
   credits: number;
 };
 
+/** Course + section — used for coursemates vs section mates. */
+export type CourseEnrollment = {
+  courseCode: string;
+  section: string;
+};
+
 export type Project = {
   id: string;
   title: string;
@@ -40,7 +46,11 @@ export type Achievement = {
 };
 
 export type Student = {
-  id: string; // synthetic id, NOT real student id
+  id: string; // app user id (numeric string from DB) or legacy mock ids
+  /** Monotonic DB id (#) for display/search — optional on mock personas. */
+  userNumber?: number;
+  /** Relative profile image (/uploads/...) when set — otherwise Dicebear by handle */
+  profileImageUrl?: string | null;
   name: string;
   handle: string;
   studentIdMasked: string; // e.g., 22-XXXXX-1 (masked)
@@ -52,7 +62,9 @@ export type Student = {
   vibe: string; // 1-line vibe
   skills: string[];
   interests: string[];
-  currentCourses: string[]; // course codes
+  currentCourses: string[]; // course codes (mirror of enrollments.courseCode)
+  /** When present, drives sections for coursemates. */
+  courseEnrollments?: CourseEnrollment[];
   projects: Project[];
   achievements: Achievement[];
   openTo: ("Study Partners" | "Project Teammates" | "Mentorship" | "Casual Chat")[];

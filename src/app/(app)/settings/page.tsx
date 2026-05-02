@@ -22,7 +22,6 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { ChangePasswordForm } from "@/components/auth/change-password-form";
 import { useStore } from "@/lib/store";
 import { useToast } from "@/components/ui/toast";
-import { deleteAccount } from "@/lib/accounts";
 import { cn, formatRelativeTime } from "@/lib/utils";
 
 export default function SettingsPage() {
@@ -43,8 +42,8 @@ export default function SettingsPage() {
 
   if (!me) return null;
 
-  const handleSignOut = () => {
-    signOut();
+  const handleSignOut = async () => {
+    await signOut();
     toast({
       kind: "info",
       title: "Signed out",
@@ -53,17 +52,48 @@ export default function SettingsPage() {
     router.replace("/login");
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (
       !confirm(
-        "Permanently delete your AIUB Live account on this device? This cannot be undone.",
+        "Permanently delete your AIUB Live account and profile in the database? This cannot be undone.",
       )
     )
       return;
-    if (signedInId) deleteAccount(signedInId);
-    reset();
-    toast({ kind: "success", title: "Account deleted" });
-    setTimeout(() => router.replace("/"), 200);
+    const pwd = window.prompt(
+      "Type your current password to confirm account deletion:",
+    );
+    if (!pwd) return;
+
+    try {
+      const res = await fetch("/api/auth/account", {
+        method: "DELETE",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          studentId: signedInId,
+          password: pwd,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok !== true) {
+        toast({
+          kind: "error",
+          title: "Could not delete account",
+          description: String(data.message || res.statusText),
+        });
+        return;
+      }
+
+      reset();
+      toast({ kind: "success", title: "Account deleted" });
+      setTimeout(() => router.replace("/"), 200);
+    } catch {
+      toast({
+        kind: "error",
+        title: "Network error",
+        description: "Try again shortly.",
+      });
+    }
   };
 
   return (
@@ -84,8 +114,9 @@ export default function SettingsPage() {
             title="Password"
             description={
               <>
-                Hashed with PBKDF2-SHA256 (200,000 iterations) and a random
-                per-account salt. Brute-force locks after 5 failed attempts.
+                Stored with bcrypt hashing on the database and guarded by JWT
+                session cookies from the backend. Repeated failures lock login
+                for a cooldown period.
               </>
             }
             action={

@@ -15,6 +15,7 @@ export function CoursePicker({
   className,
   placeholder = "Search by course name or code…",
   emptyText = "No matching courses. Try another keyword.",
+  resultLimit = 500,
 }: {
   value: string[];
   onChange: (next: string[]) => void;
@@ -23,6 +24,8 @@ export function CoursePicker({
   className?: string;
   placeholder?: string;
   emptyText?: string;
+  /** How many catalogue rows appear in the scrollable dropdown. */
+  resultLimit?: number;
 }) {
   const [query, setQuery] = React.useState("");
   const [open, setOpen] = React.useState(false);
@@ -36,9 +39,9 @@ export function CoursePicker({
       searchCourses(query, {
         department,
         exclude: value,
-        limit: 40,
+        limit: resultLimit,
       }),
-    [query, department, value],
+    [query, department, value, resultLimit],
   );
 
   React.useEffect(() => setActiveIdx(0), [query, open]);

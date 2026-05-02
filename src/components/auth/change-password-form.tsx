@@ -7,7 +7,6 @@ import { Label } from "@/components/ui/input";
 import { PasswordInput } from "@/components/ui/password-input";
 import { PasswordStrengthMeter } from "@/components/auth/password-strength";
 import { useStore } from "@/lib/store";
-import { changePassword } from "@/lib/accounts";
 import { evaluatePassword } from "@/lib/crypto";
 import { useToast } from "@/components/ui/toast";
 
@@ -47,13 +46,25 @@ export function ChangePasswordForm({ onClose }: { onClose?: () => void }) {
     setSubmitting(true);
     setServerError(null);
     try {
-      const result = await changePassword(signedInId, current, next);
-      if (!result.ok) {
-        if (result.code === "wrong-current") setErrors({ current: result.message });
-        else if (result.code === "weak-new") setErrors({ next: result.message });
-        else if (result.code === "same-as-current")
-          setErrors({ next: result.message });
-        else setServerError(result.message);
+      const res = await fetch("/api/auth/password", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          studentId: signedInId,
+          currentPassword: current,
+          newPassword: next,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if ((data.ok as boolean) !== true) {
+        const code = String(data.code ?? "");
+        if (code === "wrong-current") setErrors({ current: String(data.message) });
+        else if (code === "weak-new")
+          setErrors({ next: String(data.message) });
+        else if (code === "same-as-current")
+          setErrors({ next: String(data.message) });
+        else setServerError(String(data.message) || res.statusText);
         return;
       }
       toast({

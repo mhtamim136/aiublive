@@ -2,12 +2,13 @@
 
 import * as React from "react";
 import { ArrowLeft, Save, Plus, Trash2 } from "lucide-react";
+import { Avatar } from "@/components/ui/avatar";
 import { useStore } from "@/lib/store";
 import { Button } from "@/components/ui/button";
 import { Input, Label, Textarea } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { ChipInput } from "@/components/ui/chip-input";
-import { CoursePicker } from "@/components/ui/course-picker";
+import { CourseEnrollmentPicker } from "@/components/ui/course-enrollment-picker";
 import { Badge } from "@/components/ui/badge";
 import {
   departments,
@@ -20,26 +21,46 @@ import {
   skillSuggestions,
 } from "@/lib/catalog";
 import type { Department, Project, Student } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { cn, resolveStudentAvatar, studentEnrollments } from "@/lib/utils";
+import { useToast } from "@/components/ui/toast";
 
 export function ProfileEditor({ onClose }: { onClose: () => void }) {
   const me = useStore((s) => s.me)!;
   const updateMe = useStore((s) => s.updateMe);
+  const refreshSession = useStore((s) => s.refreshSession);
+  const { toast } = useToast();
 
-  const [draft, setDraft] = React.useState<Student>(me);
+  const [draft, setDraft] = React.useState<Student>(() => ({
+    ...me,
+    courseEnrollments: studentEnrollments(me),
+  }));
 
   const update = <K extends keyof Student>(key: K, value: Student[K]) =>
     setDraft((d) => ({ ...d, [key]: value }));
 
-  const save = () => {
-    updateMe({
+  const save = async () => {
+    const enrollments =
+      draft.courseEnrollments?.length ?
+        draft.courseEnrollments
+      : studentEnrollments(draft);
+    const faculty =
+      departments.find((d) => d.code === draft.department)?.faculty ?? draft.faculty;
+    const ok = await updateMe({
       ...draft,
+      courseEnrollments: enrollments,
+      currentCourses: enrollments.map((e) => e.courseCode),
       vibe: draft.vibe || me.vibe,
       level: deriveLevel(draft.semester),
-      faculty:
-        departments.find((d) => d.code === draft.department)?.faculty ??
-        me.faculty,
+      faculty,
     });
+    if (!ok) {
+      toast({
+        kind: "error",
+        title: "Could not save",
+        description: "Check your connection and try again.",
+      });
+      return;
+    }
     onClose();
   };
 
@@ -59,6 +80,64 @@ export function ProfileEditor({ onClose }: { onClose: () => void }) {
       </div>
 
       <Section title="Identity">
+        <div className="mb-4 flex flex-col items-start gap-3 sm:flex-row sm:items-center">
+          <Avatar
+            src={resolveStudentAvatar(draft)}
+            name={draft.name}
+            size={72}
+          />
+          <div>
+            <Label className="text-xs">Profile photo</Label>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="mt-1.5"
+              onClick={() =>
+                document.getElementById("avatar-file")?.click()
+              }
+            >
+              Upload image
+            </Button>
+            <input
+              id="avatar-file"
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/gif"
+              className="hidden"
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                const fd = new FormData();
+                fd.append("avatar", file);
+                try {
+                  const res = await fetch("/api/upload/avatar", {
+                    method: "POST",
+                    credentials: "include",
+                    body: fd,
+                  });
+                  const data = await res.json().catch(() => ({}));
+                  if (!res.ok || data.ok !== true)
+                    throw new Error(data.message || "Upload failed");
+                  if (data.student) setDraft((d) => ({ ...d, ...(data.student as Student) }));
+                  await refreshSession();
+                  toast({ kind: "success", title: "Photo updated" });
+                } catch {
+                  toast({
+                    kind: "error",
+                    title: "Upload failed",
+                    description: "Try a smaller JPG, PNG or WebP.",
+                  });
+                } finally {
+                  e.target.value = "";
+                }
+              }}
+            />
+            <p className="mt-1 max-w-xs text-[11px] text-muted-foreground">
+              Saved as static files under{" "}
+              <span className="font-mono">public/uploads/avatars</span> (max ~2.5&nbsp;MB).
+            </p>
+          </div>
+        </div>
         <Grid>
           <div>
             <Label>Full name</Label>
@@ -200,9 +279,15 @@ export function ProfileEditor({ onClose }: { onClose: () => void }) {
       </Section>
 
       <Section title="Current courses">
-        <CoursePicker
-          value={draft.currentCourses}
-          onChange={(v) => update("currentCourses", v)}
+        <CourseEnrollmentPicker
+          value={studentEnrollments(draft)}
+          onChange={(en) =>
+            setDraft((d) => ({
+              ...d,
+              courseEnrollments: en,
+              currentCourses: en.map((x) => x.courseCode),
+            }))
+          }
           department={draft.department}
           max={8}
         />
