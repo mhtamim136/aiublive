@@ -8,7 +8,7 @@ export async function GET() {
   try {
     await client.connect();
 
-    const result = await client.query("SELECT * FROM users");
+    const result = await client.query("SELECT COUNT(*) FROM users");
 
     await client.end();
 

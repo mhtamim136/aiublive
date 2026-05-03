@@ -4,6 +4,7 @@ import * as React from "react";
 import { CoursePicker } from "@/components/ui/course-picker";
 import { Input, Label } from "@/components/ui/input";
 import { X } from "lucide-react";
+import { getCourse } from "@/lib/catalog";
 import type { CourseEnrollment } from "@/lib/types";
 import type { Department } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -37,13 +38,13 @@ export function CourseEnrollmentPicker({
     );
     const out: CourseEnrollment[] = nextCodes.map((courseCode) => ({
       courseCode,
-      section: normalizeSection(prev[courseCode] ?? "") || "",
+      section: normalizeSection(prev[courseCode] ?? ""),
     }));
     onChange(out);
   };
 
   const setSection = (code: string, section: string) => {
-    const sec = normalizeSection(section) || "";
+    const sec = normalizeSection(section);
     onChange(
       value.map((e) =>
         e.courseCode === code ? { ...e, section: sec } : e,
@@ -61,7 +62,7 @@ export function CourseEnrollmentPicker({
         onChange={syncCodes}
         department={department}
         max={max}
-        placeholder="Scroll or search by code/title…"
+        placeholder="Scroll or search by course name…"
       />
 
       {value.length > 0 && (
@@ -70,38 +71,46 @@ export function CourseEnrollmentPicker({
             Sections (shown to section mates — same course + section)
           </p>
           <ul className="space-y-2">
-            {value.map((e) => (
-              <li
-                key={e.courseCode}
-                className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3"
-              >
-                <span className="font-mono text-sm font-semibold">
-                  {e.courseCode}
-                </span>
-                <div className="flex flex-1 items-center gap-2">
-                  <div className="min-w-[120px] flex-1 sm:max-w-[200px]">
-                    <Label className="sr-only">Section for {e.courseCode}</Label>
-                    <Input
-                      value={e.section}
-                      maxLength={16}
-                      placeholder="e.g. A, B, G2"
-                      onChange={(ev) =>
-                        setSection(e.courseCode, ev.target.value)
-                      }
-                      className="font-mono text-sm uppercase"
-                    />
+            {value.map((e) => {
+              const c = getCourse(e.courseCode);
+              const title = c?.title ?? "Custom course";
+              const sectionMissing = !e.section.trim();
+              return (
+                <li
+                  key={e.courseCode}
+                  className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3"
+                >
+                  <span className="truncate text-sm font-medium">
+                    {title}
+                  </span>
+                  <div className="flex flex-1 items-start gap-2">
+                    <div className="min-w-[120px] flex-1 sm:max-w-[200px]">
+                      <Label className="sr-only">
+                        Section for {title}
+                      </Label>
+                      <Input
+                        value={e.section}
+                        maxLength={16}
+                        placeholder="e.g. A, B, G2"
+                        onChange={(ev) =>
+                          setSection(e.courseCode, ev.target.value)
+                        }
+                        className="font-mono text-sm uppercase"
+                        error={sectionMissing ? "Please select section" : undefined}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => remove(e.courseCode)}
+                      className="mt-1 rounded p-1.5 text-muted-foreground transition hover:bg-muted hover:text-danger"
+                      aria-label={`Remove ${title}`}
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => remove(e.courseCode)}
-                    className="rounded p-1.5 text-muted-foreground transition hover:bg-muted hover:text-danger"
-                    aria-label={`Remove ${e.courseCode}`}
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                </div>
-              </li>
-            ))}
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}

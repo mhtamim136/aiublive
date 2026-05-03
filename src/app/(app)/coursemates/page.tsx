@@ -148,24 +148,22 @@ function Inner() {
                 const active = code === activeCode;
                 const count =
                   active && mates.length ? mates.length : undefined;
+                const title = c?.title ?? "Custom course";
+                const sec = sectionForCourse(me, code);
                 return (
                   <button
                     key={code}
                     onClick={() => setActive(code)}
                     className={cn(
-                      "group flex min-w-[180px] items-center justify-between gap-3 rounded-2xl border px-4 py-3 text-left transition-all",
+                      "group flex min-w-[200px] items-center justify-between gap-3 rounded-2xl border px-4 py-3 text-left transition-all",
                       active
                         ? "border-primary bg-primary/5 shadow-glow"
                         : "border-border bg-card hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-card",
                     )}
                   >
                     <div className="min-w-0">
-                      <p className="font-mono text-sm font-semibold">{code}</p>
-                      <p className="truncate text-[10px] text-muted-foreground">
-                        Sec {sectionForCourse(me, code)}
-                      </p>
-                      <p className="truncate text-xs text-muted-foreground">
-                        {c?.title ?? "Custom course"}
+                      <p className="truncate text-sm font-semibold">
+                        {title} : {sec || "—"}
                       </p>
                     </div>
                     <Badge
@@ -219,11 +217,11 @@ function Inner() {
               <div className="rounded-2xl border border-border bg-gradient-to-r from-primary/[0.06] to-accent/[0.06] p-5">
                 <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
                   <div>
-                    <p className="font-mono text-sm font-semibold text-primary">
-                      {activeCode}
-                    </p>
-                    <h2 className="mt-1 font-display text-xl font-semibold">
+                    <h2 className="font-display text-xl font-semibold">
                       {courseInfo?.title ?? "Your course"}
+                      {sectionMode === "section" && mySec ? (
+                        <span className="text-foreground/70"> : {mySec}</span>
+                      ) : null}
                     </h2>
                     <p className="mt-1 text-sm text-muted-foreground">
                       {sectionMode === "section" ?
@@ -271,28 +269,35 @@ function Inner() {
                 Courses your peers are taking — add any if you're enrolled too.
               </p>
               <div className="mt-3 flex flex-wrap gap-2">
-                {suggestions.map((s) => (
-                  <button
-                    key={s.code}
-                    onClick={async () => {
-                      const en = studentEnrollments(me);
-                      if (en.some((e) => e.courseCode === s.code)) {
-                        setActive(s.code);
-                        return;
-                      }
-                      const next = [...en, { courseCode: s.code, section: "A" }];
-                      const ok = await updateMe({
-                        courseEnrollments: next,
-                        currentCourses: next.map((e) => e.courseCode),
-                      });
-                      if (ok) setActive(s.code);
-                    }}
-                    className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium transition hover:border-primary/40 hover:bg-primary/5"
-                  >
-                    <Plus className="h-3 w-3" />
-                    {s.code} · {s.count} students
-                  </button>
-                ))}
+                {suggestions.map((s) => {
+                  const sc = getCourse(s.code);
+                  const title = sc?.title ?? "Custom course";
+                  return (
+                    <button
+                      key={s.code}
+                      onClick={async () => {
+                        const en = studentEnrollments(me);
+                        if (en.some((e) => e.courseCode === s.code)) {
+                          setActive(s.code);
+                          return;
+                        }
+                        const next = [
+                          ...en,
+                          { courseCode: s.code, section: "A" },
+                        ];
+                        const ok = await updateMe({
+                          courseEnrollments: next,
+                          currentCourses: next.map((e) => e.courseCode),
+                        });
+                        if (ok) setActive(s.code);
+                      }}
+                      className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium transition hover:border-primary/40 hover:bg-primary/5"
+                    >
+                      <Plus className="h-3 w-3" />
+                      {title} · {s.count} students
+                    </button>
+                  );
+                })}
               </div>
             </section>
           )}

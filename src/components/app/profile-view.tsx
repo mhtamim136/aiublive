@@ -345,20 +345,15 @@ export function ProfileView({
               {student.currentCourses.map((code) => {
                 const c = getCourse(code);
                 const sec = sectionForCourse(student, code);
+                const title = c?.title ?? "Custom course";
                 return (
                   <li
                     key={code}
                     className="flex items-center justify-between gap-2 rounded-xl border border-border bg-card p-3"
                   >
                     <div className="min-w-0">
-                      <p className="font-mono text-sm font-medium">
-                        {code}{" "}
-                        <span className="text-[10px] font-normal uppercase text-muted-foreground">
-                          · Sec {sec}
-                        </span>
-                      </p>
-                      <p className="truncate text-xs text-muted-foreground">
-                        {c?.title ?? "Custom course"}
+                      <p className="truncate text-sm font-medium">
+                        {title} : {sec || "—"}
                       </p>
                     </div>
                     <Link

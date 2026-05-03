@@ -82,7 +82,8 @@ export async function POST(req: Request) {
       uid = await signupUser(pool, data, hash);
     } catch (err) {
       const e = err as { code?: string };
-      if (e?.code === "ER_DUP_ENTRY") {
+      // PostgreSQL unique-violation SQLSTATE.
+      if (e?.code === "23505") {
         return NextResponse.json({
           ok: false,
           code: "duplicate",

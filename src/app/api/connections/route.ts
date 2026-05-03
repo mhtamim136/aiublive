@@ -4,6 +4,7 @@ import { getPool } from "@/server/db";
 import { getSessionUserIdFromCookies } from "@/server/session-cookie";
 import {
   acceptConnectionByPeer,
+  completeOutgoingRequestAsConnected,
   createConnectionRequest,
   loadConnectionMap,
 } from "@/server/social-repository";
@@ -56,11 +57,7 @@ export async function POST(req: Request) {
     if (b.data.action === "accept-incoming") {
       await acceptConnectionByPeer(pool, uid, peerId);
     } else if (b.data.action === "complete-outgoing-demo") {
-      await pool.execute(
-        `UPDATE connections SET status = 'connected'
-         WHERE requester_id = ? AND peer_id = ? AND status = 'pending'`,
-        [uid, peerId],
-      );
+      await completeOutgoingRequestAsConnected(pool, uid, peerId);
     } else {
       const ok = await createConnectionRequest(pool, uid, peerId);
       if (!ok) {

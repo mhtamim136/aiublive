@@ -188,10 +188,6 @@ export function CoursePicker({
                             {c.title}
                           </p>
                           <p className="truncate text-[11px] text-muted-foreground">
-                            <span className="font-mono font-medium text-foreground/70">
-                              {c.code}
-                            </span>
-                            <span className="mx-1.5">·</span>
                             <span>{c.credits} credit{c.credits === 1 ? "" : "s"}</span>
                           </p>
                         </div>
@@ -241,16 +237,13 @@ export function CoursePicker({
               >
                 <Check className="h-3 w-3 text-primary" />
                 <span className="font-medium">
-                  {c ? truncate(c.title, 32) : code}
-                </span>
-                <span className="hidden font-mono text-[10px] text-primary/70 sm:inline">
-                  {code}
+                  {c ? truncate(c.title, 36) : "Custom course"}
                 </span>
                 <button
                   type="button"
                   onClick={() => remove(code)}
                   className="rounded p-0.5 transition hover:bg-primary/20"
-                  aria-label={`Remove ${code}`}
+                  aria-label={`Remove ${c ? c.title : "course"}`}
                 >
                   <X className="h-3 w-3" />
                 </button>

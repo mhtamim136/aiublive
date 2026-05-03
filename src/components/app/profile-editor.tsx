@@ -43,6 +43,14 @@ export function ProfileEditor({ onClose }: { onClose: () => void }) {
       draft.courseEnrollments?.length ?
         draft.courseEnrollments
       : studentEnrollments(draft);
+    if (enrollments.some((en) => !en.section.trim())) {
+      toast({
+        kind: "error",
+        title: "Please select section",
+        description: "Each course needs a section so we can match section mates.",
+      });
+      return;
+    }
     const faculty =
       departments.find((d) => d.code === draft.department)?.faculty ?? draft.faculty;
     const ok = await updateMe({

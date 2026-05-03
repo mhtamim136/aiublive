@@ -272,6 +272,8 @@ export default function OnboardingPage() {
     if (i === 3) {
       if (form.courseEnrollments.length === 0)
         e.courseEnrollments = "Add at least 1 course you're taking now";
+      else if (form.courseEnrollments.some((en) => !en.section.trim()))
+        e.courseEnrollments = "Please select section";
     }
     if (i === 4) {
       if (form.skills.length < 2) e.skills = "At least 2 skills, please";

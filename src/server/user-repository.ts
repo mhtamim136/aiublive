@@ -1,4 +1,4 @@
-import type { Pool, PoolConnection, RowDataPacket, ResultSetHeader } from "mysql2/promise";
+import type { Pool, PoolClient } from "pg";
 import { deriveLevel } from "@/lib/catalog";
 import type {
   Achievement,
@@ -34,28 +34,27 @@ export async function fetchUserCredentials(
   pool: Pool,
   studentIdNorm: string,
 ): Promise<UserRow | null> {
-  const [rows] = await pool.execute<UserRow[] & RowDataPacket[]>(
+  const r = await pool.query<UserRow>(
     `SELECT id, student_id, handle, password_hash, locked_until,
             failed_attempt_count, last_failed_attempt_at
-       FROM users WHERE student_id = ? LIMIT 1`,
+       FROM users WHERE student_id = $1 LIMIT 1`,
     [studentIdNorm],
   );
-  return rows.length ? rows[0] : null;
+  return r.rows[0] ?? null;
 }
 
 export async function fetchUserStudentId(pool: Pool, userId: number) {
-  const [rows] = await pool.execute<RowDataPacket[]>(
-    "SELECT student_id FROM users WHERE id = ? LIMIT 1",
+  const r = await pool.query<{ student_id: string }>(
+    "SELECT student_id FROM users WHERE id = $1 LIMIT 1",
     [userId],
   );
-  const r = rows[0];
-  return r?.student_id ? String(r.student_id) : "";
+  return r.rows[0]?.student_id ?? "";
 }
 
 export async function resetLoginFailures(pool: Pool, userId: number) {
-  await pool.execute<ResultSetHeader>(
+  await pool.query(
     `UPDATE users SET failed_attempt_count = 0,
-        last_failed_attempt_at = NULL, locked_until = NULL WHERE id = ?`,
+        last_failed_attempt_at = NULL, locked_until = NULL WHERE id = $1`,
     [userId],
   );
 }
@@ -63,22 +62,25 @@ export async function resetLoginFailures(pool: Pool, userId: number) {
 /**
  * Applies one failed-login attempt on the locked DB row so counts stay correct.
  */
-export async function applyFailedLogin(pool: Pool, userId: number): Promise<{
-  lockedUntilMs: number | null;
-  remainingBeforeLock: number;
-}> {
-  const conn = await pool.getConnection();
+export async function applyFailedLogin(
+  pool: Pool,
+  userId: number,
+): Promise<{ lockedUntilMs: number | null; remainingBeforeLock: number }> {
+  const client = await pool.connect();
   try {
-    await conn.beginTransaction();
-    const [rows] = await conn.execute<UserRow[] & RowDataPacket[]>(
+    await client.query("BEGIN");
+    const r = await client.query<{
+      failed_attempt_count: number;
+      last_failed_attempt_at: Date | null;
+    }>(
       `SELECT failed_attempt_count, last_failed_attempt_at
-         FROM users WHERE id = ?
+         FROM users WHERE id = $1
          FOR UPDATE`,
       [userId],
     );
-    const lockedUser = rows[0];
+    const lockedUser = r.rows[0];
     if (!lockedUser) {
-      await conn.rollback();
+      await client.query("ROLLBACK");
       return { lockedUntilMs: null, remainingBeforeLock: LOGIN_LIMIT };
     }
 
@@ -95,12 +97,12 @@ export async function applyFailedLogin(pool: Pool, userId: number): Promise<{
       count = 0;
     }
 
-    await conn.execute(
-      `UPDATE users SET failed_attempt_count = ?, last_failed_attempt_at = NOW(),
-          locked_until = ? WHERE id = ?`,
+    await client.query(
+      `UPDATE users SET failed_attempt_count = $1, last_failed_attempt_at = NOW(),
+          locked_until = $2 WHERE id = $3`,
       [count, lockedUntil, userId],
     );
-    await conn.commit();
+    await client.query("COMMIT");
 
     const lockedMs = lockedUntil ? lockedUntil.getTime() : null;
     const cur = lockedMs ? 0 : Math.min(count, LOGIN_LIMIT);
@@ -110,87 +112,107 @@ export async function applyFailedLogin(pool: Pool, userId: number): Promise<{
       remainingBeforeLock: Math.max(0, LOGIN_LIMIT - cur),
     };
   } catch (e) {
-    await conn.rollback();
+    await client.query("ROLLBACK");
     throw e;
   } finally {
-    conn.release();
+    client.release();
   }
 }
 
+// ── Helpers used during signup + profile patch ──────────────────────────
+
 async function replaceSkills(
-  conn: PoolConnection,
+  client: PoolClient,
   userId: number,
   skills: string[],
 ) {
-  await conn.execute("DELETE FROM user_skills WHERE user_id = ?", [userId]);
+  await client.query("DELETE FROM user_skills WHERE user_id = $1", [userId]);
+  const seen = new Set<string>();
   for (const s of skills) {
-    await conn.execute(
-      "INSERT INTO user_skills (user_id, skill) VALUES (?, ?)",
-      [userId, s.trim()],
+    const trimmed = s.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    await client.query(
+      "INSERT INTO user_skills (user_id, skill) VALUES ($1, $2)",
+      [userId, trimmed],
     );
   }
 }
 
 async function replaceInterests(
-  conn: PoolConnection,
+  client: PoolClient,
   userId: number,
   items: string[],
 ) {
-  await conn.execute("DELETE FROM user_interests WHERE user_id = ?", [userId]);
+  await client.query("DELETE FROM user_interests WHERE user_id = $1", [userId]);
+  const seen = new Set<string>();
   for (const s of items) {
-    await conn.execute(
-      "INSERT INTO user_interests (user_id, interest) VALUES (?, ?)",
-      [userId, s.trim()],
+    const trimmed = s.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    await client.query(
+      "INSERT INTO user_interests (user_id, interest) VALUES ($1, $2)",
+      [userId, trimmed],
     );
   }
 }
 
 async function replaceOpenness(
-  conn: PoolConnection,
+  client: PoolClient,
   userId: number,
   labels: string[],
 ) {
-  await conn.execute("DELETE FROM user_openness WHERE user_id = ?", [userId]);
+  await client.query("DELETE FROM user_openness WHERE user_id = $1", [userId]);
+  const seen = new Set<string>();
   for (const s of labels) {
-    await conn.execute(
-      "INSERT INTO user_openness (user_id, label) VALUES (?, ?)",
+    if (!s || seen.has(s)) continue;
+    seen.add(s);
+    await client.query(
+      "INSERT INTO user_openness (user_id, label) VALUES ($1, $2)",
       [userId, s],
     );
   }
 }
 
 async function replaceEnrollments(
-  conn: PoolConnection,
+  client: PoolClient,
   userId: number,
   items: CourseEnrollment[],
 ) {
-  await conn.execute("DELETE FROM user_enrollments WHERE user_id = ?", [
+  await client.query("DELETE FROM user_enrollments WHERE user_id = $1", [
     userId,
   ]);
+  const seen = new Set<string>();
   for (const e of items) {
-    await conn.execute(
+    if (!e?.courseCode || seen.has(e.courseCode)) continue;
+    seen.add(e.courseCode);
+    await client.query(
       `INSERT INTO user_enrollments (user_id, course_code, section)
-       VALUES (?, ?, ?)`,
+       VALUES ($1, $2, $3)`,
       [userId, e.courseCode, e.section],
     );
   }
 }
 
 async function replacePortfolio(
-  conn: PoolConnection,
+  client: PoolClient,
   userId: number,
   items: (Pick<
     Project,
     "id" | "title" | "description" | "tags" | "year"
   > & { link?: string })[],
 ) {
-  await conn.execute("DELETE FROM user_portfolio_projects WHERE user_id = ?", [
-    userId,
-  ]);
+  await client.query(
+    "DELETE FROM user_portfolio_projects WHERE user_id = $1",
+    [userId],
+  );
+  const seen = new Set<string>();
   for (const p of items) {
-    await conn.execute(
+    if (!p?.id || seen.has(p.id)) continue;
+    seen.add(p.id);
+    await client.query(
       `INSERT INTO user_portfolio_projects (user_id, pid, title, description, year, tags_json, link)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
       [
         userId,
         p.id,
@@ -205,20 +227,23 @@ async function replacePortfolio(
 }
 
 async function replaceAchievements(
-  conn: PoolConnection,
+  client: PoolClient,
   userId: number,
   items: (Pick<Achievement, "id" | "title" | "year"> & {
     description?: string;
     type?: Achievement["type"];
   })[],
 ) {
-  await conn.execute("DELETE FROM user_achievements WHERE user_id = ?", [
+  await client.query("DELETE FROM user_achievements WHERE user_id = $1", [
     userId,
   ]);
+  const seen = new Set<string>();
   for (const a of items) {
-    await conn.execute(
+    if (!a?.id || seen.has(a.id)) continue;
+    seen.add(a.id);
+    await client.query(
       `INSERT INTO user_achievements (user_id, aid, title, description, year, type)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+       VALUES ($1, $2, $3, $4, $5, $6)`,
       [
         userId,
         a.id,
@@ -236,22 +261,22 @@ export async function signupUser(
   input: SignupValidated,
   passwordHash: string,
 ): Promise<number> {
-  const conn = await pool.getConnection();
+  const client = await pool.connect();
   try {
-    await conn.beginTransaction();
-    const [head] = await conn.execute<ResultSetHeader>(
-      "INSERT INTO users (student_id, handle, password_hash) VALUES (?, ?, ?)",
+    await client.query("BEGIN");
+    const inserted = await client.query<{ id: number }>(
+      "INSERT INTO users (student_id, handle, password_hash) VALUES ($1, $2, $3) RETURNING id",
       [input.studentId, input.profile.handle, passwordHash],
     );
-    const uid = Number(head.insertId);
+    const uid = Number(inserted.rows[0]?.id);
     if (!uid) throw new Error("Signup insert failed");
 
     const p = input.profile;
-    await conn.execute(
+    await client.query(
       `INSERT INTO user_profiles (
         user_id, display_name, department, faculty, semester, bio, vibe,
         is_mentor, joined_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
       [
         uid,
         p.name,
@@ -260,118 +285,129 @@ export async function signupUser(
         p.semester,
         p.bio ?? "",
         p.vibe ?? "",
-        p.isMentor ? 1 : 0,
+        !!p.isMentor,
       ],
     );
 
-    await replaceSkills(conn, uid, p.skills);
-    await replaceInterests(conn, uid, p.interests);
-    await replaceOpenness(conn, uid, p.openTo);
-    await replaceEnrollments(conn, uid, p.courseEnrollments);
-    await replacePortfolio(conn, uid, p.projects ?? []);
-    await replaceAchievements(conn, uid, p.achievements ?? []);
+    await replaceSkills(client, uid, p.skills);
+    await replaceInterests(client, uid, p.interests);
+    await replaceOpenness(client, uid, p.openTo);
+    await replaceEnrollments(client, uid, p.courseEnrollments);
+    await replacePortfolio(client, uid, p.projects ?? []);
+    await replaceAchievements(client, uid, p.achievements ?? []);
 
-    await conn.commit();
+    await client.query("COMMIT");
     return uid;
   } catch (e) {
-    await conn.rollback();
+    await client.query("ROLLBACK");
     throw e;
   } finally {
-    conn.release();
+    client.release();
   }
 }
+
+type ProfileRow = {
+  display_name: string;
+  department: string;
+  faculty: string;
+  semester: number;
+  bio: string;
+  vibe: string;
+  is_mentor: boolean;
+  avatar_storage_path: string | null;
+  github: string | null;
+  linkedin: string | null;
+  website: string | null;
+  joined_at: Date | string;
+};
 
 export async function loadStudent(
   pool: Pool,
   userId: number,
 ): Promise<Student | null> {
-  const [[uRows], [pRows]] = await Promise.all([
-    pool.execute<UserRow[] & RowDataPacket[]>(
-      "SELECT id, student_id, handle FROM users WHERE id = ? LIMIT 1",
+  const [uRes, pRes] = await Promise.all([
+    pool.query<{ id: number; student_id: string; handle: string }>(
+      "SELECT id, student_id, handle FROM users WHERE id = $1 LIMIT 1",
       [userId],
     ),
-    pool.execute<RowDataPacket[]>(
-      "SELECT display_name AS display_name, department, faculty, semester, bio, vibe, " +
-        "is_mentor, avatar_storage_path, github, linkedin, website, joined_at " +
-        "FROM user_profiles WHERE user_id = ? LIMIT 1",
+    pool.query<ProfileRow>(
+      `SELECT display_name, department, faculty, semester, bio, vibe,
+              is_mentor, avatar_storage_path, github, linkedin, website, joined_at
+         FROM user_profiles WHERE user_id = $1 LIMIT 1`,
       [userId],
     ),
   ]);
 
-  const user = uRows[0];
-  const profileRow = (pRows as Record<string, unknown>[])[0];
+  const user = uRes.rows[0];
+  const profileRow = pRes.rows[0];
   if (!user || !profileRow) return null;
 
-  const [[skRows], [inRows], [opRows], [enRows], [pjRows], [achRows]] =
-    await Promise.all([
-      pool.execute<RowDataPacket[]>(
-        "SELECT skill FROM user_skills WHERE user_id = ? ORDER BY skill ASC",
-        [userId],
-      ),
-      pool.execute<RowDataPacket[]>(
-        `SELECT interest FROM user_interests WHERE user_id = ? ORDER BY interest ASC`,
-        [userId],
-      ),
-      pool.execute<RowDataPacket[]>(
-        `SELECT label FROM user_openness WHERE user_id = ? ORDER BY label ASC`,
-        [userId],
-      ),
-      pool.execute<RowDataPacket[]>(
-        `SELECT course_code, section FROM user_enrollments WHERE user_id = ? ORDER BY course_code ASC`,
-        [userId],
-      ),
-      pool.execute<RowDataPacket[]>(
-        `SELECT pid, title, description, year, tags_json, link
-         FROM user_portfolio_projects WHERE user_id = ? ORDER BY id DESC`,
-        [userId],
-      ),
-      pool.execute<RowDataPacket[]>(
-        `SELECT aid, title, description, year, type
-         FROM user_achievements WHERE user_id = ? ORDER BY id DESC`,
-        [userId],
-      ),
-    ]);
+  const [skRes, inRes, opRes, enRes, pjRes, achRes] = await Promise.all([
+    pool.query<{ skill: string }>(
+      "SELECT skill FROM user_skills WHERE user_id = $1 ORDER BY skill ASC",
+      [userId],
+    ),
+    pool.query<{ interest: string }>(
+      "SELECT interest FROM user_interests WHERE user_id = $1 ORDER BY interest ASC",
+      [userId],
+    ),
+    pool.query<{ label: string }>(
+      "SELECT label FROM user_openness WHERE user_id = $1 ORDER BY label ASC",
+      [userId],
+    ),
+    pool.query<{ course_code: string; section: string }>(
+      `SELECT course_code, section FROM user_enrollments
+         WHERE user_id = $1 ORDER BY course_code ASC`,
+      [userId],
+    ),
+    pool.query<{
+      pid: string;
+      title: string;
+      description: string;
+      year: number;
+      tags_json: unknown;
+      link: string | null;
+    }>(
+      `SELECT pid, title, description, year, tags_json, link
+         FROM user_portfolio_projects WHERE user_id = $1 ORDER BY id DESC`,
+      [userId],
+    ),
+    pool.query<{
+      aid: string;
+      title: string;
+      description: string | null;
+      year: number;
+      type: Achievement["type"];
+    }>(
+      `SELECT aid, title, description, year, type
+         FROM user_achievements WHERE user_id = $1 ORDER BY id DESC`,
+      [userId],
+    ),
+  ]);
 
-  const skills = ((skRows as { skill: string }[]) ?? []).map((r) => r.skill);
-  const interests = ((inRows as { interest: string }[]) ?? []).map(
-    (r) => r.interest,
-  );
-  const openTo = (((opRows as { label: string }[]) ?? []).map((r) => r.label) ??
-    []) as Student["openTo"];
-  const enrollments: CourseEnrollment[] = ((enRows as {
-    course_code: string;
-    section: string;
-  }[]) ?? []).map((r) => ({
+  const skills = skRes.rows.map((r) => r.skill);
+  const interests = inRes.rows.map((r) => r.interest);
+  const openTo = opRes.rows.map((r) => r.label) as Student["openTo"];
+  const enrollments: CourseEnrollment[] = enRes.rows.map((r) => ({
     courseCode: r.course_code,
     section: r.section,
   }));
   const currentCourses = enrollments.map((e) => e.courseCode);
 
-  const projects: Project[] = ((pjRows as Record<string, unknown>[]) ?? []).map(
-    (r) => ({
-      id: String(r.pid),
-      title: String(r.title ?? ""),
-      description: String(r.description ?? ""),
-      tags: r.tags_json
-        ? (JSON.parse(String(r.tags_json)) as string[])
-        : [],
-      year: Number(r.year),
-      link:
-        typeof r.link === "string" && r.link.trim()
-          ? r.link
-          : undefined,
-    }),
-  );
+  const projects: Project[] = pjRes.rows.map((r) => ({
+    id: String(r.pid),
+    title: String(r.title ?? ""),
+    description: String(r.description ?? ""),
+    tags: Array.isArray(r.tags_json) ? (r.tags_json as string[]) : [],
+    year: Number(r.year),
+    link:
+      typeof r.link === "string" && r.link.trim() ? r.link : undefined,
+  }));
 
-  const achievements: Achievement[] = (
-    (achRows as Record<string, unknown>[]) ?? []
-  ).map((r) => ({
+  const achievements: Achievement[] = achRes.rows.map((r) => ({
     id: String(r.aid),
     title: String(r.title ?? ""),
-    description:
-      typeof r.description === "string"
-        ? r.description
-        : undefined,
+    description: r.description ?? undefined,
     year: Number(r.year),
     type: (r.type as Achievement["type"]) ?? "academic",
   }));
@@ -383,13 +419,13 @@ export async function loadStudent(
   }
 
   const sem = Number(profileRow.semester);
-  const gh = profileRow.github as string | null;
-  const li = profileRow.linkedin as string | null;
-  const ws = profileRow.website as string | null;
+  const gh = profileRow.github;
+  const li = profileRow.linkedin;
+  const ws = profileRow.website;
 
   return {
     id: String(user.id),
-    userNumber: user.id,
+    userNumber: Number(user.id),
     name: String(profileRow.display_name ?? ""),
     handle: user.handle,
     studentIdMasked: maskStudentId(user.student_id),
@@ -406,25 +442,19 @@ export async function loadStudent(
     projects,
     achievements,
     openTo,
-    isMentor: !!(profileRow.is_mentor as number),
+    isMentor: !!profileRow.is_mentor,
     links:
       gh || li || ws
         ? {
-            ...(gh?.trim()
-              ? { github: gh }
-              : {}),
-            ...(li?.trim()
-              ? { linkedin: li }
-              : {}),
-            ...(ws?.trim()
-              ? { website: ws }
-              : {}),
+            ...(gh?.trim() ? { github: gh } : {}),
+            ...(li?.trim() ? { linkedin: li } : {}),
+            ...(ws?.trim() ? { website: ws } : {}),
           }
         : undefined,
     joinedAt:
       typeof profileRow.joined_at === "string"
         ? profileRow.joined_at
-        : new Date(profileRow.joined_at as Date).toISOString(),
+        : new Date(profileRow.joined_at).toISOString(),
     profileImageUrl,
   };
 }
@@ -434,14 +464,17 @@ export async function isHandleTaken(
   handle: string,
   exceptUserId?: number,
 ): Promise<boolean> {
-  const q =
-    exceptUserId != null
-      ? `SELECT id FROM users WHERE handle = ? AND id <> ? LIMIT 1`
-      : `SELECT id FROM users WHERE handle = ? LIMIT 1`;
-  const args =
-    exceptUserId != null ? [handle, exceptUserId] : [handle];
-  const [rows] = await pool.execute<RowDataPacket[]>(q, args);
-  return rows.length > 0;
+  if (exceptUserId != null) {
+    const r = await pool.query(
+      "SELECT 1 FROM users WHERE handle = $1 AND id <> $2 LIMIT 1",
+      [handle, exceptUserId],
+    );
+    return (r.rowCount ?? 0) > 0;
+  }
+  const r = await pool.query("SELECT 1 FROM users WHERE handle = $1 LIMIT 1", [
+    handle,
+  ]);
+  return (r.rowCount ?? 0) > 0;
 }
 
 export async function updatePasswordHash(
@@ -449,7 +482,7 @@ export async function updatePasswordHash(
   userId: number,
   passwordHash: string,
 ) {
-  await pool.execute("UPDATE users SET password_hash = ? WHERE id = ?", [
+  await pool.query("UPDATE users SET password_hash = $1 WHERE id = $2", [
     passwordHash,
     userId,
   ]);
@@ -460,8 +493,8 @@ export async function setAvatarPath(
   userId: number,
   relativePath: string | null,
 ) {
-  await pool.execute(
-    "UPDATE user_profiles SET avatar_storage_path = ? WHERE user_id = ?",
+  await pool.query(
+    "UPDATE user_profiles SET avatar_storage_path = $1 WHERE user_id = $2",
     [relativePath, userId],
   );
 }
@@ -497,11 +530,11 @@ export async function patchProfileDb(
   userId: number,
   patch: ProfilePatchFlat,
 ) {
-  const conn = await pool.getConnection();
+  const client = await pool.connect();
   try {
-    await conn.beginTransaction();
+    await client.query("BEGIN");
     if (patch.handle != null) {
-      await conn.execute("UPDATE users SET handle = ? WHERE id = ?", [
+      await client.query("UPDATE users SET handle = $1 WHERE id = $2", [
         patch.handle,
         userId,
       ]);
@@ -509,69 +542,47 @@ export async function patchProfileDb(
 
     const assigns: string[] = [];
     const vals: unknown[] = [];
-    if (patch.display_name != null) {
-      assigns.push("display_name = ?");
-      vals.push(patch.display_name);
-    }
-    if (patch.department != null) {
-      assigns.push("department = ?");
-      vals.push(patch.department);
-    }
-    if (patch.faculty != null) {
-      assigns.push("faculty = ?");
-      vals.push(patch.faculty);
-    }
-    if (patch.semester != null) {
-      assigns.push("semester = ?");
-      vals.push(patch.semester);
-    }
-    if (patch.bio != null) {
-      assigns.push("bio = ?");
-      vals.push(patch.bio);
-    }
-    if (patch.vibe != null) {
-      assigns.push("vibe = ?");
-      vals.push(patch.vibe);
-    }
-    if (patch.isMentor != null) {
-      assigns.push("is_mentor = ?");
-      vals.push(patch.isMentor ? 1 : 0);
-    }
-    if (patch.github !== undefined) {
-      assigns.push("github = ?");
-      vals.push(patch.github);
-    }
-    if (patch.linkedin !== undefined) {
-      assigns.push("linkedin = ?");
-      vals.push(patch.linkedin);
-    }
-    if (patch.website !== undefined) {
-      assigns.push("website = ?");
-      vals.push(patch.website);
-    }
+
+    const add = (col: string, value: unknown) => {
+      vals.push(value);
+      assigns.push(`${col} = $${vals.length}`);
+    };
+
+    if (patch.display_name != null) add("display_name", patch.display_name);
+    if (patch.department != null) add("department", patch.department);
+    if (patch.faculty != null) add("faculty", patch.faculty);
+    if (patch.semester != null) add("semester", patch.semester);
+    if (patch.bio != null) add("bio", patch.bio);
+    if (patch.vibe != null) add("vibe", patch.vibe);
+    if (patch.isMentor != null) add("is_mentor", !!patch.isMentor);
+    if (patch.github !== undefined) add("github", patch.github);
+    if (patch.linkedin !== undefined) add("linkedin", patch.linkedin);
+    if (patch.website !== undefined) add("website", patch.website);
+
     if (assigns.length > 0) {
-      await conn.query(
-        `UPDATE user_profiles SET ${assigns.join(", ")} WHERE user_id = ?`,
-        [...vals, userId],
+      vals.push(userId);
+      await client.query(
+        `UPDATE user_profiles SET ${assigns.join(", ")} WHERE user_id = $${vals.length}`,
+        vals,
       );
     }
 
-    if (patch.skills) await replaceSkills(conn, userId, patch.skills);
-    if (patch.interests) await replaceInterests(conn, userId, patch.interests);
-    if (patch.openTo) await replaceOpenness(conn, userId, patch.openTo as string[]);
+    if (patch.skills) await replaceSkills(client, userId, patch.skills);
+    if (patch.interests) await replaceInterests(client, userId, patch.interests);
+    if (patch.openTo)
+      await replaceOpenness(client, userId, patch.openTo as string[]);
     if (patch.enrollments)
-      await replaceEnrollments(conn, userId, patch.enrollments);
-    if (patch.projects)
-      await replacePortfolio(conn, userId, patch.projects);
+      await replaceEnrollments(client, userId, patch.enrollments);
+    if (patch.projects) await replacePortfolio(client, userId, patch.projects);
     if (patch.achievements)
-      await replaceAchievements(conn, userId, patch.achievements);
+      await replaceAchievements(client, userId, patch.achievements);
 
-    await conn.commit();
+    await client.query("COMMIT");
   } catch (e) {
-    await conn.rollback();
+    await client.query("ROLLBACK");
     throw e;
   } finally {
-    conn.release();
+    client.release();
   }
 }
 
@@ -587,40 +598,43 @@ export async function searchPublicStudents(
   const limit = Math.min(Math.max(opts.limit ?? 40, 1), 120);
   const clauses: string[] = ["1=1"];
   const params: unknown[] = [];
+  const ph = (val: unknown) => {
+    params.push(val);
+    return `$${params.length}`;
+  };
 
   if (opts.excludeIds?.length) {
-    clauses.push(
-      `u.id NOT IN (${opts.excludeIds.map(() => "?").join(",")})`,
-    );
-    params.push(...opts.excludeIds);
+    const phs = opts.excludeIds.map((id) => ph(id));
+    clauses.push(`u.id NOT IN (${phs.join(",")})`);
   }
 
   if (opts.department) {
-    clauses.push("p.department = ?");
-    params.push(opts.department);
+    clauses.push(`p.department = ${ph(opts.department)}`);
   }
 
   const raw = opts.q?.trim().slice(0, 96);
   if (raw) {
     const term = raw.replace(/[%_]/g, "").trim();
-    const pat =
-      term.length > 0 ? `%${term}%` : `%${raw.replace(/[%_]/g, "")}%`;
-    const idPrefixPat = /^[0-9]+$/.test(term) ? `${term}%` : null;
-
-    clauses.push(`(
-      LOWER(u.handle) LIKE LOWER(?)
-      OR p.display_name LIKE ?
-      OR u.student_id LIKE ?
-      OR REPLACE(REPLACE(u.student_id,'-',''),' ','') LIKE REPLACE(REPLACE(?,'-',''),' ','')
-      ${idPrefixPat ? " OR CAST(u.id AS CHAR) LIKE ? OR u.id = ?" : ""}
-    )`);
-
+    const pat = term.length > 0 ? `%${term}%` : `%${raw}%`;
+    const isNumeric = /^[0-9]+$/.test(term);
     const compactStudent = term.toUpperCase().replace(/[^\d]/g, "");
-    params.push(pat, pat, pat.toUpperCase(), `%${compactStudent}%`);
-    if (idPrefixPat) {
+
+    const subClauses: string[] = [
+      `u.handle ILIKE ${ph(pat)}`,
+      `p.display_name ILIKE ${ph(pat)}`,
+      `u.student_id ILIKE ${ph(pat.toUpperCase())}`,
+      `REPLACE(REPLACE(u.student_id,'-',''),' ','') ILIKE ${ph(`%${compactStudent}%`)}`,
+    ];
+
+    if (isNumeric) {
       const idNum = Number(term);
-      params.push(idPrefixPat, Number.isFinite(idNum) ? idNum : -1);
+      subClauses.push(`u.id::text ILIKE ${ph(`${term}%`)}`);
+      if (Number.isFinite(idNum)) {
+        subClauses.push(`u.id = ${ph(idNum)}`);
+      }
     }
+
+    clauses.push(`(${subClauses.join(" OR ")})`);
   }
 
   const sql = `
@@ -629,8 +643,8 @@ export async function searchPublicStudents(
     WHERE ${clauses.join(" AND ")}
     ORDER BY p.joined_at DESC
     LIMIT ${limit}`;
-  const [rows] = await pool.query<RowDataPacket[]>(sql, params);
-  return (rows ?? []).map((r) => Number(r.id)).filter(Number.isFinite);
+  const r = await pool.query<{ id: number }>(sql, params);
+  return r.rows.map((row) => Number(row.id)).filter(Number.isFinite);
 }
 
 export async function findUsersInCourseSection(
@@ -643,26 +657,27 @@ export async function findUsersInCourseSection(
   },
 ): Promise<number[]> {
   const lim = Math.min(Math.max(opts.limit ?? 120, 1), 240);
-  const params: unknown[] = [opts.courseCode];
-  let sectionClause = "";
+  const params: unknown[] = [];
+  const ph = (v: unknown) => {
+    params.push(v);
+    return `$${params.length}`;
+  };
+
+  const wherePieces: string[] = [`e.course_code = ${ph(opts.courseCode)}`];
   if (opts.section?.trim()) {
-    sectionClause = " AND e.section = ?";
-    params.push(opts.section.trim());
+    wherePieces.push(`e.section = ${ph(opts.section.trim())}`);
   }
-  params.push(opts.excludeUserId ?? 0);
+  wherePieces.push(`e.user_id <> ${ph(opts.excludeUserId ?? 0)}`);
 
-  const sql =
-    `SELECT DISTINCT e.user_id AS id FROM user_enrollments e
-      WHERE e.course_code = ? ${sectionClause}
-      AND e.user_id <> ?
-      ORDER BY id ASC LIMIT ${lim}`;
+  const sql = `
+    SELECT DISTINCT e.user_id AS id FROM user_enrollments e
+    WHERE ${wherePieces.join(" AND ")}
+    ORDER BY id ASC LIMIT ${lim}`;
 
-  const [rows] = await pool.query<RowDataPacket[]>(sql, params);
-  return (rows ?? []).map((r) => Number(r.id)).filter(Number.isFinite);
+  const r = await pool.query<{ id: number }>(sql, params);
+  return r.rows.map((row) => Number(row.id)).filter(Number.isFinite);
 }
 
 export async function deleteUser(pool: Pool, userId: number) {
-  await pool.execute<ResultSetHeader>("DELETE FROM users WHERE id = ?", [
-    userId,
-  ]);
+  await pool.query("DELETE FROM users WHERE id = $1", [userId]);
 }
