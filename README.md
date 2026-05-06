@@ -213,6 +213,12 @@ AIUB Live is **not a generic campus feed**. It is a focused identity platform th
 
 ---
 
+## Contributions
+
+Contributions, ideas, and feature requests are welcome through Pull Requests, Issues, and Discussions.
+
+Please discuss major changes before submitting a PR.
+
 ## License / usage restrictions
 This is a **protected personal project**. Unauthorized copying, redistribution, commercial use, cloning, or reproduction of this project or its assets is prohibited. Legal action may be taken in response to unauthorized use.
 
