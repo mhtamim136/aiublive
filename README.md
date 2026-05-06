@@ -227,3 +227,5 @@ Student of **American International University-Bangladesh (AIUB)**
 ## Contact / Portfolio
 - Portfolio: https://mhtamim136.github.io/
 - Live Platform: https://aiublive.vercel.app/
+
+© 2026 Murad Hasan Tamim. All rights reserved.

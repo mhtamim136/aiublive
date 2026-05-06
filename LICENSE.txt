@@ -1,0 +1,16 @@
+AIUB Live
+Copyright (c) 2026 Murad Hasan Tamim
+
+All rights reserved.
+
+This project, including its source code, UI/UX design, branding, architecture, assets, and related materials, may not be copied, modified, redistributed, reproduced, sold, or used commercially without explicit written permission from the author.
+
+Unauthorized use, cloning, or reproduction may result in legal action.
+
+Contributions, feedback, and collaboration requests are welcome through GitHub Discussions, Issues, or Pull Requests.
+
+Developed by Murad Hasan Tamim
+American International University-Bangladesh (AIUB)
+
+Portfolio:
+https://mhtamim136.github.io/
