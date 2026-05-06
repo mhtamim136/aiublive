@@ -160,7 +160,16 @@ export const profilePatchSchema = z.object({
   bio: z.string().max(560).optional(),
   vibe: z.string().max(160).optional(),
   isMentor: z.boolean().optional(),
-  avatarId: z.enum(["m1", "m2", "m3", "f1", "f2", "f3"]).nullable().optional(),
+  isGraduate: z.boolean().optional(),
+  avatarId: z
+    .enum([
+      "m1", "m2", "m3",
+      "f1", "f2", "f3",
+      "n1", "n2", "n3",
+      "t1", "t2", "t3",
+    ])
+    .nullable()
+    .optional(),
   github: z.string().max(512).nullable().optional(),
   linkedin: z.string().max(512).nullable().optional(),
   website: z.string().max(512).nullable().optional(),

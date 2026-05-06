@@ -14,6 +14,7 @@ import {
   loadConnectionMap,
 } from "@/server/social-repository";
 import { normalizeStudentId } from "@/server/student-mask";
+import { emitBroadcast } from "@/server/realtime";
 
 export const runtime = "nodejs";
 
@@ -120,6 +121,18 @@ export async function POST(req: Request) {
       connections,
       bookmarks,
     });
+
+    // Tell every other connected user that campus stats changed — their
+    // dashboards will re-pull `/api/stats/dashboard` instantly without
+    // needing a page refresh.
+    try {
+      emitBroadcast({
+        type: "campus-changed",
+        data: { kind: "signup", ts: Date.now() },
+      });
+    } catch (err) {
+      console.error("[signup] broadcast failed:", err);
+    }
 
     attachSessionCookie(res, uid);
     return res;

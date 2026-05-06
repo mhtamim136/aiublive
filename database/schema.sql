@@ -42,16 +42,27 @@ CREATE TABLE IF NOT EXISTS user_profiles (
   bio VARCHAR(560) NOT NULL DEFAULT '',
   vibe VARCHAR(160) NOT NULL DEFAULT '',
   is_mentor BOOLEAN NOT NULL DEFAULT FALSE,
+  is_graduate BOOLEAN NOT NULL DEFAULT FALSE, -- explicit graduation status (sem 7-12 stays Senior)
   avatar_storage_path VARCHAR(512), -- legacy upload path (kept for back-compat)
-  avatar_id VARCHAR(8),             -- one of m1..m3 / f1..f3 (predefined)
+  avatar_id VARCHAR(8),             -- one of the predefined IDs (m1..t3)
   github VARCHAR(512),
   linkedin VARCHAR(512),
   website VARCHAR(512),
   joined_at TIMESTAMPTZ NOT NULL
 );
 
--- Safety net for databases created before avatar_id existed.
+-- Safety nets for databases created before these columns existed.
 ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS avatar_id VARCHAR(8);
+ALTER TABLE user_profiles
+  ADD COLUMN IF NOT EXISTS is_graduate BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Hot-path indexes (also applied via migrations/005).
+CREATE INDEX IF NOT EXISTS idx_user_profiles_joined_at
+  ON user_profiles(joined_at DESC);
+CREATE INDEX IF NOT EXISTS idx_user_profiles_department
+  ON user_profiles(department);
+CREATE INDEX IF NOT EXISTS idx_user_profiles_is_mentor
+  ON user_profiles(is_mentor) WHERE is_mentor = TRUE;
 
 CREATE TABLE IF NOT EXISTS user_skills (
   user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -77,6 +88,10 @@ CREATE TABLE IF NOT EXISTS user_enrollments (
   section VARCHAR(16) NOT NULL,
   PRIMARY KEY (user_id, course_code)
 );
+
+-- Reverse-direction index: "who is in this course/section?" (coursemates).
+CREATE INDEX IF NOT EXISTS idx_user_enrollments_course
+  ON user_enrollments(course_code, section);
 
 CREATE TABLE IF NOT EXISTS user_portfolio_projects (
   id BIGSERIAL PRIMARY KEY,
@@ -125,6 +140,12 @@ CREATE TABLE IF NOT EXISTS connections (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT uq_connections_pair UNIQUE (requester_id, peer_id)
 );
+
+-- Per-side connection lookups ("my pending / connected").
+CREATE INDEX IF NOT EXISTS idx_connections_requester
+  ON connections(requester_id);
+CREATE INDEX IF NOT EXISTS idx_connections_peer
+  ON connections(peer_id);
 
 DROP TRIGGER IF EXISTS connections_set_updated_at ON connections;
 CREATE TRIGGER connections_set_updated_at

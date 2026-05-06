@@ -1,5 +1,9 @@
 import { getSessionUserIdFromCookies } from "@/server/session-cookie";
-import { subscribeUser, type RealtimeEvent } from "@/server/realtime";
+import {
+  subscribeBroadcast,
+  subscribeUser,
+  type RealtimeEvent,
+} from "@/server/realtime";
 
 // Server-Sent Events (SSE) endpoint. Each open EventSource connection on the
 // frontend lives here and receives `notification`, `message`, and
@@ -39,7 +43,8 @@ export async function GET() {
       // Initial "ready" event so the client knows the channel is open.
       send({ type: "ping", data: { ts: Date.now() } });
 
-      const unsubscribe = subscribeUser(uid, send);
+      const unsubUser = subscribeUser(uid, send);
+      const unsubBroadcast = subscribeBroadcast(send);
 
       // Heartbeat every 25 s — keeps proxies/CDNs from closing the socket
       // and gives the client a quick way to tell the connection is alive.
@@ -51,7 +56,8 @@ export async function GET() {
       // close, navigation away, browser-side reconnect, etc.).
       const cleanup = () => {
         clearInterval(heartbeat);
-        unsubscribe();
+        unsubUser();
+        unsubBroadcast();
         try {
           controller.close();
         } catch {

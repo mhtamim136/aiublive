@@ -36,7 +36,11 @@ export function Topbar() {
   return (
     <header className="sticky top-0 z-30 border-b border-border bg-background/70 backdrop-blur-xl">
       <div className="flex h-16 items-center gap-2 px-3 md:gap-3 md:px-6">
-        <Link href="/" className="md:hidden" aria-label="AIUB Live">
+        <Link
+          href="/dashboard"
+          className="md:hidden rounded-lg p-1 -m-1 transition hover:opacity-80"
+          aria-label="AIUB Live dashboard"
+        >
           <Logo showText={false} />
         </Link>
 

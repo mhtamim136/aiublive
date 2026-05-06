@@ -74,6 +74,10 @@ type State = {
   /** Per-peer message lists, keyed by peerId (string). */
   threadMessages: Record<string, AppMessage[]>;
   realtimeConnected: boolean;
+  /** Bumped whenever a campus-wide event arrives (signup, etc.) so views
+   *  that aren't tied to per-user notifications can still reflect live
+   *  changes. */
+  campusTick: number;
 
   // ── Auth actions ──────────────────────────────────────────────────────
   setMe: (s: Student, signedInId: string) => void;
@@ -116,6 +120,8 @@ type State = {
     status: "pending" | "connected",
   ) => void;
   setRealtimeConnected: (on: boolean) => void;
+  /** Called by the realtime hook on campus-wide events. */
+  bumpCampusTick: () => void;
 };
 
 export const useStore = create<State>()(
@@ -137,6 +143,7 @@ export const useStore = create<State>()(
       threadSummaries: [],
       threadMessages: {},
       realtimeConnected: false,
+      campusTick: 0,
 
       setMe: (s, signedInId) =>
         set({ me: s, signedInId, hasOnboarded: true }),
@@ -605,6 +612,9 @@ export const useStore = create<State>()(
         })),
 
       setRealtimeConnected: (on) => set({ realtimeConnected: on }),
+
+      bumpCampusTick: () =>
+        set((state) => ({ campusTick: state.campusTick + 1 })),
     }),
     {
       name: "aiub-live-store-v3-realtime",

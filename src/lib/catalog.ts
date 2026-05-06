@@ -15,7 +15,8 @@ export const departments: { code: Department; name: string; faculty: Faculty }[]
 
 // Student progression semesters (1st through 12th).
 // AIUB BSc programs are 8-semester curricula; we allow up to 12 to cover
-// extensions. 12+ is treated as "Graduate / Beyond".
+// extensions. Semester alone never makes someone a "Graduate" — that requires
+// the explicit `is_graduate` flag on the profile.
 export const semesterNumbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] as const;
 
 export function ordinal(n: number) {
@@ -24,19 +25,39 @@ export function ordinal(n: number) {
   return n + (s[(v - 20) % 10] || s[v] || s[0]);
 }
 
-export function formatSemester(n: number) {
-  if (n >= 12) return "Graduate";
+export function formatSemester(n: number, isGraduate?: boolean) {
+  if (isGraduate) return "Graduated";
   return `${ordinal(n)} semester`;
 }
 
+export type StudentLevel =
+  | "Freshman"
+  | "Sophomore"
+  | "Junior"
+  | "Senior"
+  | "Graduate";
+
+/**
+ * Derive a student's level from their semester + explicit graduation flag.
+ *
+ * - 1-2 → Freshman
+ * - 3-4 → Sophomore
+ * - 5-6 → Junior
+ * - 7-12 → Senior (regardless of how many extensions)
+ * - isGraduate flag → Graduate (overrides semester)
+ *
+ * Pass `isGraduate` only when you want the explicit graduation status to
+ * win — callers that don't know it should omit it (defaults to `false`).
+ */
 export function deriveLevel(
   semester: number,
-): "Freshman" | "Sophomore" | "Junior" | "Senior" | "Graduate" {
+  isGraduate: boolean = false,
+): StudentLevel {
+  if (isGraduate) return "Graduate";
   if (semester <= 2) return "Freshman";
   if (semester <= 4) return "Sophomore";
   if (semester <= 6) return "Junior";
-  if (semester <= 8) return "Senior";
-  return "Graduate";
+  return "Senior";
 }
 
 export const skillSuggestions = [

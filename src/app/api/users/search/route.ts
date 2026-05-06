@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import { getPool } from "@/server/db";
 import { getSessionUserIdFromCookies } from "@/server/session-cookie";
-import { loadStudent, searchPublicStudents } from "@/server/user-repository";
+import {
+  loadStudentsBatch,
+  searchPublicStudents,
+} from "@/server/user-repository";
 import type { Department } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -27,9 +30,10 @@ export async function GET(req: Request) {
       limit: Number.isFinite(limit) ? limit : 60,
     });
 
-    const students = (
-      await Promise.all(ids.map((id) => loadStudent(pool, id)))
-    ).filter(Boolean);
+    // Batched read — 8 round trips total regardless of result size.
+    const students = (await loadStudentsBatch(pool, ids)).filter(
+      (s): s is NonNullable<typeof s> => s !== null,
+    );
 
     return NextResponse.json({ ok: true, students });
   } catch (e) {

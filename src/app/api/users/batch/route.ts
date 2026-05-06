@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getPool } from "@/server/db";
-import { loadStudent } from "@/server/user-repository";
+import { loadStudentsBatch } from "@/server/user-repository";
 
 export const runtime = "nodejs";
 
@@ -26,9 +26,9 @@ export async function GET(req: Request) {
 
   try {
     const pool = getPool();
-    const students = (
-      await Promise.all(ids.map((id) => loadStudent(pool, id)))
-    ).filter(Boolean);
+    const students = (await loadStudentsBatch(pool, ids)).filter(
+      (s): s is NonNullable<typeof s> => s !== null,
+    );
     return NextResponse.json({ ok: true, students });
   } catch (e) {
     console.error(e);

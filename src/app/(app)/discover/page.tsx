@@ -19,7 +19,6 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import { useStore } from "@/lib/store";
-import { mockStudents } from "@/lib/mock-data";
 import { matchReasons, matchScore, rankBy } from "@/lib/match";
 import { departments, opennessOptions } from "@/lib/catalog";
 import type { Department, Student } from "@/lib/types";
@@ -62,12 +61,14 @@ function DiscoverInner() {
   const [sort, setSort] = React.useState<SortKey>("match");
   const [showFilters, setShowFilters] = React.useState(false);
 
-  /** Directory from MySQL (`/api/users/search`), falling back to mock personas. */
-  const [students, setStudents] = React.useState<Student[]>(mockStudents);
+  /** Live directory from `/api/users/search` — DB only, no mock fallback. */
+  const [students, setStudents] = React.useState<Student[]>([]);
+  const [searching, setSearching] = React.useState(false);
 
   React.useEffect(() => {
     if (!me) return;
     let alive = true;
+    setSearching(true);
     (async () => {
       try {
         const qs = new URLSearchParams();
@@ -82,11 +83,13 @@ function DiscoverInner() {
         if (!alive) return;
         if ((data.ok as boolean) === true && Array.isArray(data.students)) {
           setStudents(data.students as Student[]);
-        } else if (alive) {
-          setStudents(mockStudents);
+        } else {
+          setStudents([]);
         }
       } catch {
-        if (alive) setStudents(mockStudents);
+        if (alive) setStudents([]);
+      } finally {
+        if (alive) setSearching(false);
       }
     })();
     return () => {
@@ -324,11 +327,28 @@ function DiscoverInner() {
         )}
       </div>
 
-      {sorted.length === 0 ? (
+      {searching && students.length === 0 ? (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div
+              key={i}
+              className="h-56 animate-pulse rounded-2xl border border-border bg-muted/30"
+            />
+          ))}
+        </div>
+      ) : sorted.length === 0 ? (
         <EmptyState
           icon={<Filter className="h-5 w-5" />}
-          title="No matches with these filters"
-          description="Try clearing a filter or broadening your search."
+          title={
+            students.length === 0
+              ? "No students found"
+              : "No matches with these filters"
+          }
+          description={
+            students.length === 0
+              ? "Be one of the first — invite a friend, and they'll show up here in real time."
+              : "Try clearing a filter or broadening your search."
+          }
           action={
             <Button variant="outline" onClick={clearAll}>
               Clear all filters

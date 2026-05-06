@@ -71,6 +71,8 @@ export type Student = {
   achievements: Achievement[];
   openTo: ("Study Partners" | "Project Teammates" | "Mentorship" | "Casual Chat")[];
   isMentor?: boolean;
+  /** Explicit graduation flag — semester alone never makes someone Graduate. */
+  isGraduate?: boolean;
   links?: { github?: string; linkedin?: string; website?: string };
   joinedAt: string; // ISO date
 };

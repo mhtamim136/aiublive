@@ -39,6 +39,10 @@ export type RealtimeEvent =
       data: { peerId: number; status: "pending" | "connected" };
     }
   | {
+      type: "campus-changed";
+      data: { kind: "signup" | "profile"; ts: number };
+    }
+  | {
       type: "ping";
       data: { ts: number };
     };
@@ -59,9 +63,19 @@ function bus(): EventEmitter {
 }
 
 const channel = (userId: number) => `u:${userId}`;
+const BROADCAST_CHANNEL = "broadcast";
 
 export function emitToUser(userId: number, event: RealtimeEvent) {
   bus().emit(channel(userId), event);
+}
+
+/**
+ * Fan an event out to every connected user on this Node instance. Use for
+ * campus-wide signals (new signup, moderation events, etc.) where the
+ * dashboard / discover counts may have changed for everyone.
+ */
+export function emitBroadcast(event: RealtimeEvent) {
+  bus().emit(BROADCAST_CHANNEL, event);
 }
 
 export function subscribeUser(
@@ -71,4 +85,11 @@ export function subscribeUser(
   const ch = channel(userId);
   bus().on(ch, handler);
   return () => bus().off(ch, handler);
+}
+
+export function subscribeBroadcast(
+  handler: (event: RealtimeEvent) => void,
+): () => void {
+  bus().on(BROADCAST_CHANNEL, handler);
+  return () => bus().off(BROADCAST_CHANNEL, handler);
 }

@@ -36,7 +36,11 @@ export function Sidebar() {
   return (
     <aside className="hidden h-[100dvh] w-64 shrink-0 flex-col border-r border-border bg-card/50 backdrop-blur-xl md:sticky md:top-0 md:flex">
       <div className="flex h-16 items-center px-5">
-        <Link href="/" aria-label="AIUB Live home">
+        <Link
+          href="/dashboard"
+          aria-label="AIUB Live dashboard"
+          className="rounded-lg p-1 -m-1 transition hover:opacity-80"
+        >
           <Logo />
         </Link>
       </div>
@@ -117,7 +121,11 @@ export function MobileBottomNav() {
   const pathname = usePathname();
   const mobileItems = items.slice(0, 5);
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-border bg-card/80 backdrop-blur-xl md:hidden">
+    <nav
+      // pb-[env(safe-area-inset-bottom)] keeps the bar above iPhone home
+      // indicators; min-h ensures every tap target is ≥44 px.
+      className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-border bg-card/85 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl md:hidden"
+    >
       {mobileItems.map((it) => {
         const active =
           pathname === it.href ||
@@ -126,13 +134,23 @@ export function MobileBottomNav() {
           <Link
             key={it.href}
             href={it.href}
+            aria-current={active ? "page" : undefined}
             className={cn(
-              "flex flex-col items-center justify-center gap-0.5 px-2 py-2 text-[11px] transition-colors",
-              active ? "text-foreground" : "text-muted-foreground",
+              "relative flex min-h-[56px] flex-col items-center justify-center gap-0.5 px-1 py-2 text-[11px] font-medium transition-colors",
+              active
+                ? "text-primary"
+                : "text-muted-foreground hover:text-foreground",
             )}
           >
+            {/* Active pill — visible but subtle */}
+            {active && (
+              <span
+                aria-hidden
+                className="absolute inset-x-3 top-1 h-0.5 rounded-full bg-primary"
+              />
+            )}
             <it.icon className="h-5 w-5" />
-            <span>{it.label}</span>
+            <span className="tracking-tight">{it.label}</span>
           </Link>
         );
       })}

@@ -7,7 +7,6 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { BookOpen, Plus, Users2 } from "lucide-react";
 import { PageHeader } from "@/components/app/page-header";
 import { useStore } from "@/lib/store";
-import { mockStudents } from "@/lib/mock-data";
 import { getCourse } from "@/lib/catalog";
 import { StudentCard } from "@/components/app/student-card";
 import { Button } from "@/components/ui/button";
@@ -82,6 +81,34 @@ function Inner() {
     };
   }, [me, activeCode, sectionMode, sectionParam]);
 
+  // Server-driven suggestion list — popular courses among everyone else
+  // (excluding mine). Refreshes whenever my course list changes.
+  const [suggestions, setSuggestions] = React.useState<
+    { code: string; count: number }[]
+  >([]);
+  React.useEffect(() => {
+    if (!me) return;
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch("/api/coursemates/suggestions", {
+          credentials: "include",
+          cache: "no-store",
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!alive) return;
+        if ((data.ok as boolean) === true && Array.isArray(data.suggestions)) {
+          setSuggestions(data.suggestions as { code: string; count: number }[]);
+        }
+      } catch {
+        // soft fail — suggestions are optional
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [me, me?.currentCourses.length]);
+
   if (!me) return null;
 
   const myCourses = me.currentCourses;
@@ -99,20 +126,6 @@ function Inner() {
   };
 
   const courseInfo = activeCode ? getCourse(activeCode) : null;
-
-  const suggestionMap = new Map<string, number>();
-  mockStudents.forEach((s) => {
-    if (s.id === me.id) return;
-    s.currentCourses.forEach((c) => {
-      if (!myCourses.includes(c)) {
-        suggestionMap.set(c, (suggestionMap.get(c) ?? 0) + 1);
-      }
-    });
-  });
-  const suggestions = [...suggestionMap.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 4)
-    .map(([code, count]) => ({ code, count }));
 
   const mySec = activeCode ? sectionForCourse(me, activeCode) : "";
 

@@ -426,7 +426,7 @@ export default function OnboardingPage() {
             {idTaken && !errors.studentIdRaw && (
               <p className="mt-1.5 inline-flex items-center gap-1.5 text-xs text-warning">
                 <ShieldAlert className="h-3 w-3" />
-                Already used on this device.{" "}
+                Account already exists.{" "}
                 <Link
                   href={`/login?id=${encodeURIComponent(form.studentIdRaw)}`}
                   className="font-medium text-primary hover:underline"
@@ -583,7 +583,7 @@ export default function OnboardingPage() {
                           : "text-muted-foreground",
                       )}
                     >
-                      {n >= 12 ? "grad" : "sem"}
+                      sem
                     </span>
                   </button>
                 );

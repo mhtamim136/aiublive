@@ -59,7 +59,7 @@ export function ProfileEditor({ onClose }: { onClose: () => void }) {
       courseEnrollments: enrollments,
       currentCourses: enrollments.map((e) => e.courseCode),
       vibe: draft.vibe || me.vibe,
-      level: deriveLevel(draft.semester),
+      level: deriveLevel(draft.semester, draft.isGraduate),
       faculty,
     });
     if (!ok) {
@@ -205,7 +205,7 @@ export function ProfileEditor({ onClose }: { onClose: () => void }) {
                           : "text-muted-foreground",
                       )}
                     >
-                      {n >= 12 ? "grad" : "sem"}
+                      sem
                     </span>
                   </button>
                 );
@@ -214,39 +214,39 @@ export function ProfileEditor({ onClose }: { onClose: () => void }) {
             <p className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-muted/50 px-2.5 py-1 text-xs text-muted-foreground">
               You'll show up as{" "}
               <span className="font-medium text-foreground">
-                {deriveLevel(draft.semester)}
+                {deriveLevel(draft.semester, draft.isGraduate)}
               </span>{" "}
-              · {formatSemester(draft.semester)}
+              · {formatSemester(draft.semester, draft.isGraduate)}
             </p>
           </div>
 
-          <div>
-            <Label>Mentor mode</Label>
-            <button
-              type="button"
-              onClick={() => update("isMentor", !draft.isMentor)}
-              className={cn(
-                "flex h-11 w-full items-center justify-between rounded-xl border px-4 text-sm transition",
-                draft.isMentor
-                  ? "border-primary bg-primary/5 text-primary"
-                  : "border-border bg-card",
-              )}
-            >
-              {draft.isMentor ? "Available as mentor" : "Off"}
-              <span
-                className={cn(
-                  "ml-2 h-4 w-7 rounded-full transition-colors",
-                  draft.isMentor ? "bg-primary" : "bg-muted",
-                )}
-              >
-                <span
-                  className={cn(
-                    "block h-3.5 w-3.5 translate-y-[1px] rounded-full bg-background transition-transform",
-                    draft.isMentor ? "translate-x-[14px]" : "translate-x-[2px]",
-                  )}
-                />
-              </span>
-            </button>
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div>
+              <Label>Mentor mode</Label>
+              <ToggleRow
+                on={!!draft.isMentor}
+                onLabel="Available as mentor"
+                offLabel="Off"
+                onChange={(v) => update("isMentor", v)}
+              />
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Juniors will see a "Mentor" badge on your profile.
+              </p>
+            </div>
+
+            <div>
+              <Label>I have graduated</Label>
+              <ToggleRow
+                on={!!draft.isGraduate}
+                onLabel="Graduated — show as alumni"
+                offLabel="Currently studying"
+                onChange={(v) => update("isGraduate", v)}
+              />
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Semester 7+ stays "Senior". This toggle is the only way you
+                appear as Graduate.
+              </p>
+            </div>
           </div>
         </div>
       </Section>
@@ -497,5 +497,47 @@ function Section({
 function Grid({ children }: { children: React.ReactNode }) {
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">{children}</div>
+  );
+}
+
+function ToggleRow({
+  on,
+  onLabel,
+  offLabel,
+  onChange,
+}: {
+  on: boolean;
+  onLabel: string;
+  offLabel: string;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      onClick={() => onChange(!on)}
+      className={cn(
+        "flex h-11 w-full items-center justify-between rounded-xl border px-4 text-sm transition",
+        on
+          ? "border-primary bg-primary/5 text-primary"
+          : "border-border bg-card",
+      )}
+    >
+      {on ? onLabel : offLabel}
+      <span
+        className={cn(
+          "ml-2 h-4 w-7 rounded-full transition-colors",
+          on ? "bg-primary" : "bg-muted",
+        )}
+      >
+        <span
+          className={cn(
+            "block h-3.5 w-3.5 translate-y-[1px] rounded-full bg-background transition-transform",
+            on ? "translate-x-[14px]" : "translate-x-[2px]",
+          )}
+        />
+      </span>
+    </button>
   );
 }

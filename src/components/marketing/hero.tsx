@@ -15,6 +15,7 @@ import { Magnetic } from "@/components/marketing/magnetic";
 import { Button } from "@/components/ui/button";
 import { mockStudents } from "@/lib/mock-data";
 import { avatarUrl } from "@/lib/utils";
+import { useAuthFlag } from "@/lib/use-auth-flag";
 
 export function Hero() {
   const ref = React.useRef<HTMLDivElement>(null);
@@ -75,33 +76,8 @@ export function Hero() {
             noise. Just your people.
           </motion.p>
 
-          <motion.div
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.65, duration: 0.6, ease: "easeOut" }}
-            className="mt-9 flex flex-col items-center gap-3 sm:flex-row"
-          >
-            <Magnetic>
-              <Link href="/onboarding">
-                <Button
-                  size="lg"
-                  rightIcon={<ArrowRight className="h-4 w-4" />}
-                  className="h-12 px-7 text-base"
-                >
-                  Get started — it's free
-                </Button>
-              </Link>
-            </Magnetic>
-            <Link href="/login">
-              <Button
-                size="lg"
-                variant="outline"
-                className="h-12 px-6 text-base"
-              >
-                I already have an account
-              </Button>
-            </Link>
-          </motion.div>
+          <HeroCtas />
+
 
           <motion.span
             initial={{ opacity: 0 }}
@@ -131,6 +107,40 @@ export function Hero() {
         </motion.div>
       </div>
     </section>
+  );
+}
+
+function HeroCtas() {
+  const authed = useAuthFlag();
+  // Hero CTA always says "Get Started"; if the user is already signed in,
+  // we send them straight to the dashboard so they're never asked to
+  // re-onboard. The secondary "Login" button mirrors the same shortcut.
+  const startHref = authed ? "/dashboard" : "/onboarding";
+  const loginHref = authed ? "/dashboard" : "/login";
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: 0.65, duration: 0.6, ease: "easeOut" }}
+      className="mt-9 flex flex-col items-center gap-3 sm:flex-row"
+    >
+      <Magnetic>
+        <Link href={startHref}>
+          <Button
+            size="lg"
+            rightIcon={<ArrowRight className="h-4 w-4" />}
+            className="h-12 px-7 text-base"
+          >
+            Get Started
+          </Button>
+        </Link>
+      </Magnetic>
+      <Link href={loginHref}>
+        <Button size="lg" variant="outline" className="h-12 px-6 text-base">
+          {authed ? "Open dashboard" : "Login"}
+        </Button>
+      </Link>
+    </motion.div>
   );
 }
 

@@ -341,6 +341,7 @@ export async function signupUser(
 }
 
 type ProfileRow = {
+  user_id: number;
   display_name: string;
   department: string;
   faculty: string;
@@ -348,6 +349,7 @@ type ProfileRow = {
   bio: string;
   vibe: string;
   is_mentor: boolean;
+  is_graduate: boolean;
   avatar_storage_path: string | null;
   avatar_id: string | null;
   github: string | null;
@@ -370,8 +372,9 @@ export async function loadStudent(
         [userId],
       ),
       pool.query<ProfileRow>(
-        `SELECT display_name, department, faculty, semester, bio, vibe,
-                is_mentor, avatar_storage_path, avatar_id, github, linkedin, website, joined_at
+        `SELECT user_id, display_name, department, faculty, semester, bio, vibe,
+                is_mentor, is_graduate, avatar_storage_path, avatar_id,
+                github, linkedin, website, joined_at
            FROM user_profiles WHERE user_id = $1 LIMIT 1`,
         [userId],
       ),
@@ -455,6 +458,7 @@ export async function loadStudent(
   }
 
   const sem = Number(profileRow.semester);
+  const isGraduate = !!profileRow.is_graduate;
   const gh = profileRow.github;
   const li = profileRow.linkedin;
   const ws = profileRow.website;
@@ -472,7 +476,7 @@ export async function loadStudent(
     department: profileRow.department as Department,
     faculty: profileRow.faculty as Faculty,
     semester: sem,
-    level: deriveLevel(sem),
+    level: deriveLevel(sem, isGraduate),
     bio: String(profileRow.bio ?? ""),
     vibe: String(profileRow.vibe ?? ""),
     skills,
@@ -483,6 +487,7 @@ export async function loadStudent(
     achievements,
     openTo,
     isMentor: !!profileRow.is_mentor,
+    isGraduate,
     links:
       gh || li || ws
         ? {
@@ -498,6 +503,194 @@ export async function loadStudent(
     profileImageUrl,
     avatarId,
   };
+}
+
+/**
+ * Batched version of `loadStudent` — fetches an arbitrary list of users in
+ * exactly 8 round trips regardless of N. Use this anywhere you'd otherwise
+ * `Promise.all(ids.map(loadStudent))`, which is N×8 round trips and was
+ * the dominant cost of /api/coursemates and /api/users/search.
+ *
+ * Order in the returned array follows `userIds`, with `null` placeholders
+ * for any id that doesn't have a profile row.
+ */
+export async function loadStudentsBatch(
+  pool: Pool,
+  userIds: number[],
+): Promise<(Student | null)[]> {
+  const ids = [...new Set(userIds.filter((n) => Number.isFinite(n) && n > 0))];
+  if (ids.length === 0) return userIds.map(() => null);
+
+  const [uRes, pRes, skRes, inRes, opRes, enRes, pjRes, achRes] =
+    await Promise.all([
+      pool.query<{ id: number; student_id: string; handle: string }>(
+        "SELECT id, student_id, handle FROM users WHERE id = ANY($1::bigint[])",
+        [ids],
+      ),
+      pool.query<ProfileRow>(
+        `SELECT user_id, display_name, department, faculty, semester, bio, vibe,
+                is_mentor, is_graduate, avatar_storage_path, avatar_id,
+                github, linkedin, website, joined_at
+           FROM user_profiles WHERE user_id = ANY($1::bigint[])`,
+        [ids],
+      ),
+      pool.query<{ user_id: number; skill: string }>(
+        `SELECT user_id, skill FROM user_skills
+          WHERE user_id = ANY($1::bigint[]) ORDER BY skill ASC`,
+        [ids],
+      ),
+      pool.query<{ user_id: number; interest: string }>(
+        `SELECT user_id, interest FROM user_interests
+          WHERE user_id = ANY($1::bigint[]) ORDER BY interest ASC`,
+        [ids],
+      ),
+      pool.query<{ user_id: number; label: string }>(
+        `SELECT user_id, label FROM user_openness
+          WHERE user_id = ANY($1::bigint[]) ORDER BY label ASC`,
+        [ids],
+      ),
+      pool.query<{ user_id: number; course_code: string; section: string }>(
+        `SELECT user_id, course_code, section FROM user_enrollments
+          WHERE user_id = ANY($1::bigint[]) ORDER BY course_code ASC`,
+        [ids],
+      ),
+      pool.query<{
+        user_id: number;
+        pid: string;
+        title: string;
+        description: string;
+        year: number;
+        tags_json: unknown;
+        link: string | null;
+        id: number;
+      }>(
+        `SELECT user_id, pid, title, description, year, tags_json, link, id
+           FROM user_portfolio_projects
+          WHERE user_id = ANY($1::bigint[]) ORDER BY id DESC`,
+        [ids],
+      ),
+      pool.query<{
+        user_id: number;
+        aid: string;
+        title: string;
+        description: string | null;
+        year: number;
+        type: Achievement["type"];
+        id: number;
+      }>(
+        `SELECT user_id, aid, title, description, year, type, id
+           FROM user_achievements
+          WHERE user_id = ANY($1::bigint[]) ORDER BY id DESC`,
+        [ids],
+      ),
+    ]);
+
+  const userById = new Map(uRes.rows.map((u) => [Number(u.id), u]));
+  const profileById = new Map(
+    pRes.rows.map((p) => [Number(p.user_id), p]),
+  );
+
+  const groupBy = <T extends { user_id: number }>(rows: T[]) => {
+    const m = new Map<number, T[]>();
+    for (const row of rows) {
+      const k = Number(row.user_id);
+      const list = m.get(k);
+      if (list) list.push(row);
+      else m.set(k, [row]);
+    }
+    return m;
+  };
+
+  const skillsByUser = groupBy(skRes.rows);
+  const interestsByUser = groupBy(inRes.rows);
+  const opennessByUser = groupBy(opRes.rows);
+  const enrollByUser = groupBy(enRes.rows);
+  const projByUser = groupBy(pjRes.rows);
+  const achByUser = groupBy(achRes.rows);
+
+  const buildOne = (id: number): Student | null => {
+    const user = userById.get(id);
+    const profileRow = profileById.get(id);
+    if (!user || !profileRow) return null;
+
+    const enrollments: CourseEnrollment[] = (enrollByUser.get(id) ?? []).map(
+      (r) => ({ courseCode: r.course_code, section: r.section }),
+    );
+    const skills = (skillsByUser.get(id) ?? []).map((r) => r.skill);
+    const interests = (interestsByUser.get(id) ?? []).map((r) => r.interest);
+    const openTo = (opennessByUser.get(id) ?? []).map(
+      (r) => r.label,
+    ) as Student["openTo"];
+    const projects: Project[] = (projByUser.get(id) ?? []).map((r) => ({
+      id: String(r.pid),
+      title: String(r.title ?? ""),
+      description: String(r.description ?? ""),
+      tags: Array.isArray(r.tags_json) ? (r.tags_json as string[]) : [],
+      year: Number(r.year),
+      link:
+        typeof r.link === "string" && r.link.trim() ? r.link : undefined,
+    }));
+    const achievements: Achievement[] = (achByUser.get(id) ?? []).map((r) => ({
+      id: String(r.aid),
+      title: String(r.title ?? ""),
+      description: r.description ?? undefined,
+      year: Number(r.year),
+      type: (r.type as Achievement["type"]) ?? "academic",
+    }));
+
+    let profileImageUrl: string | undefined;
+    const ap = String(profileRow.avatar_storage_path ?? "").trim();
+    if (ap) profileImageUrl = `/${ap.replace(/^\/+/, "")}`;
+
+    const sem = Number(profileRow.semester);
+    const isGraduate = !!profileRow.is_graduate;
+    const gh = profileRow.github;
+    const li = profileRow.linkedin;
+    const ws = profileRow.website;
+    const avatarId =
+      profileRow.avatar_id && typeof profileRow.avatar_id === "string"
+        ? (profileRow.avatar_id as Student["avatarId"])
+        : null;
+
+    return {
+      id: String(user.id),
+      userNumber: Number(user.id),
+      name: String(profileRow.display_name ?? ""),
+      handle: user.handle,
+      studentIdMasked: maskStudentId(user.student_id),
+      department: profileRow.department as Department,
+      faculty: profileRow.faculty as Faculty,
+      semester: sem,
+      level: deriveLevel(sem, isGraduate),
+      bio: String(profileRow.bio ?? ""),
+      vibe: String(profileRow.vibe ?? ""),
+      skills,
+      interests,
+      currentCourses: enrollments.map((e) => e.courseCode),
+      courseEnrollments: enrollments,
+      projects,
+      achievements,
+      openTo,
+      isMentor: !!profileRow.is_mentor,
+      isGraduate,
+      links:
+        gh || li || ws
+          ? {
+              ...(gh?.trim() ? { github: gh } : {}),
+              ...(li?.trim() ? { linkedin: li } : {}),
+              ...(ws?.trim() ? { website: ws } : {}),
+            }
+          : undefined,
+      joinedAt:
+        typeof profileRow.joined_at === "string"
+          ? profileRow.joined_at
+          : new Date(profileRow.joined_at).toISOString(),
+      profileImageUrl,
+      avatarId,
+    };
+  };
+
+  return userIds.map((id) => buildOne(id));
 }
 
 export async function isHandleTaken(
@@ -549,6 +742,7 @@ export type ProfilePatchFlat = Partial<{
   bio: string;
   vibe: string;
   isMentor: boolean;
+  isGraduate: boolean;
   avatarId: string | null;
   github: string | null;
   linkedin: string | null;
@@ -597,6 +791,7 @@ export async function patchProfileDb(
     if (patch.bio != null) add("bio", patch.bio);
     if (patch.vibe != null) add("vibe", patch.vibe);
     if (patch.isMentor != null) add("is_mentor", !!patch.isMentor);
+    if (patch.isGraduate != null) add("is_graduate", !!patch.isGraduate);
     if (patch.avatarId !== undefined) add("avatar_id", patch.avatarId);
     if (patch.github !== undefined) add("github", patch.github);
     if (patch.linkedin !== undefined) add("linkedin", patch.linkedin);

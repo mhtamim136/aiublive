@@ -59,6 +59,7 @@ export function useRealtime() {
   const setRealtimeConnected = useStore((s) => s.setRealtimeConnected);
   const loadNotifications = useStore((s) => s.loadNotifications);
   const loadThreads = useStore((s) => s.loadThreads);
+  const bumpCampusTick = useStore((s) => s.bumpCampusTick);
 
   const { toast } = useToast();
 
@@ -159,6 +160,12 @@ export function useRealtime() {
           //
         }
       });
+
+      es.addEventListener("campus-changed", () => {
+        // Campus-wide signal (e.g. someone signed up). Components subscribing
+        // to `campusTick` re-fetch their data.
+        bumpCampusTick();
+      });
     };
 
     connect();
@@ -177,5 +184,6 @@ export function useRealtime() {
     setRealtimeConnected,
     loadNotifications,
     loadThreads,
+    bumpCampusTick,
   ]);
 }

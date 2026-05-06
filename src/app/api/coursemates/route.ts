@@ -2,7 +2,10 @@ import { NextResponse } from "next/server";
 import { courseCodeSchema, sectionSchema } from "@/server/validation";
 import { getPool } from "@/server/db";
 import { getSessionUserIdFromCookies } from "@/server/session-cookie";
-import { findUsersInCourseSection, loadStudent } from "@/server/user-repository";
+import {
+  findUsersInCourseSection,
+  loadStudentsBatch,
+} from "@/server/user-repository";
 
 export const runtime = "nodejs";
 
@@ -41,9 +44,10 @@ export async function GET(req: Request) {
       excludeUserId: viewer != null ? viewer : 0,
     });
 
-    const students = (
-      await Promise.all(ids.map((id) => loadStudent(pool, id)))
-    ).filter(Boolean);
+    // Single batched read instead of N round trips.
+    const students = (await loadStudentsBatch(pool, ids)).filter(
+      (s): s is NonNullable<typeof s> => s !== null,
+    );
 
     return NextResponse.json({ ok: true, students });
   } catch (e) {

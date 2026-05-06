@@ -148,7 +148,7 @@ export function ProfileView({
             </Badge>
             <Badge variant="soft">
               <BookOpen className="h-3 w-3" />
-              {formatSemester(student.semester)}
+              {formatSemester(student.semester, student.isGraduate)}
             </Badge>
             <Badge variant="soft">
               Joined {formatRelativeTime(student.joinedAt)}
