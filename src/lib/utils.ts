@@ -1,5 +1,6 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
+import { avatarUrlForId } from "@/lib/avatars";
 import type { CourseEnrollment, Student } from "@/lib/types";
 
 export function cn(...inputs: ClassValue[]) {
@@ -18,10 +19,17 @@ export function avatarUrl(seed: string) {
   return `https://api.dicebear.com/9.x/notionists/svg?seed=${safe}&backgroundType=gradientLinear&backgroundColor=b6e3f4,c0aede,d1d4f9,ffd5dc,ffdfbf`;
 }
 
-/** Dicebear fallback or uploaded avatar path/url. */
+/**
+ * Avatar precedence:
+ *   1. predefined avatar id (m1..f3) → DiceBear URL from PREDEFINED_AVATARS
+ *   2. legacy uploaded image path on `profileImageUrl`
+ *   3. Dicebear seeded by handle (default fallback)
+ */
 export function resolveStudentAvatar(
-  student: Pick<Student, "handle" | "profileImageUrl">,
+  student: Pick<Student, "handle" | "profileImageUrl" | "avatarId">,
 ) {
+  const fromId = avatarUrlForId(student.avatarId ?? null);
+  if (fromId) return fromId;
   const u = student.profileImageUrl?.trim();
   if (u)
     return u.startsWith("http") || u.startsWith("/") ? u : `/${u.replace(/^\/+/, "")}`;

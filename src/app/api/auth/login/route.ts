@@ -4,7 +4,6 @@ import { verifyPassword } from "@/server/password-auth";
 import {
   applyFailedLogin,
   fetchUserCredentials,
-  fetchUserStudentId,
   loadStudent,
   resetLoginFailures,
 } from "@/server/user-repository";
@@ -87,9 +86,17 @@ export async function POST(req: Request) {
       });
     }
 
-    await resetLoginFailures(pool, user.id);
+    // Run the four post-auth DB calls in one parallel batch instead of three
+    // sequential phases. `student_id` is reused from the credentials lookup
+    // we already did, so the redundant `fetchUserStudentId` round trip is
+    // gone entirely.
+    const [, student, connections, bookmarks] = await Promise.all([
+      resetLoginFailures(pool, user.id),
+      loadStudent(pool, user.id),
+      loadConnectionMap(pool, user.id),
+      listBookmarkTargetIds(pool, user.id),
+    ]);
 
-    const student = await loadStudent(pool, user.id);
     if (!student) {
       const res = NextResponse.json(
         { ok: false, code: "no-profile", message: "Incomplete account" },
@@ -99,17 +106,11 @@ export async function POST(req: Request) {
       return res;
     }
 
-    const [signedStudentId, connections, bookmarks] = await Promise.all([
-      fetchUserStudentId(pool, user.id),
-      loadConnectionMap(pool, user.id),
-      listBookmarkTargetIds(pool, user.id),
-    ]);
-
     const res = NextResponse.json({
       ok: true,
       name: student.name,
       student,
-      signedStudentId,
+      signedStudentId: user.student_id,
       connections,
       bookmarks,
     });

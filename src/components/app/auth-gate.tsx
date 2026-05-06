@@ -3,6 +3,7 @@
 import * as React from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useStore } from "@/lib/store";
+import { useRealtime } from "@/lib/use-realtime";
 
 export function AuthGate({ children }: { children: React.ReactNode }) {
   const me = useStore((s) => s.me);
@@ -30,7 +31,21 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     return <Loading />;
   }
 
-  return <>{children}</>;
+  return (
+    <>
+      <RealtimeBridge />
+      {children}
+    </>
+  );
+}
+
+/**
+ * Mounted only when authenticated. Opens the SSE channel so notifications and
+ * messages stream live, and pulls the initial lists.
+ */
+function RealtimeBridge() {
+  useRealtime();
+  return null;
 }
 
 function Loading() {

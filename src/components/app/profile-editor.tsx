@@ -10,6 +10,8 @@ import { Select } from "@/components/ui/select";
 import { ChipInput } from "@/components/ui/chip-input";
 import { CourseEnrollmentPicker } from "@/components/ui/course-enrollment-picker";
 import { Badge } from "@/components/ui/badge";
+import { AvatarPicker } from "@/components/ui/avatar-picker";
+import type { AvatarId } from "@/lib/avatars";
 import {
   departments,
   deriveLevel,
@@ -27,7 +29,6 @@ import { useToast } from "@/components/ui/toast";
 export function ProfileEditor({ onClose }: { onClose: () => void }) {
   const me = useStore((s) => s.me)!;
   const updateMe = useStore((s) => s.updateMe);
-  const refreshSession = useStore((s) => s.refreshSession);
   const { toast } = useToast();
 
   const [draft, setDraft] = React.useState<Student>(() => ({
@@ -88,62 +89,26 @@ export function ProfileEditor({ onClose }: { onClose: () => void }) {
       </div>
 
       <Section title="Identity">
-        <div className="mb-4 flex flex-col items-start gap-3 sm:flex-row sm:items-center">
-          <Avatar
-            src={resolveStudentAvatar(draft)}
-            name={draft.name}
-            size={72}
-          />
-          <div>
-            <Label className="text-xs">Profile photo</Label>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="mt-1.5"
-              onClick={() =>
-                document.getElementById("avatar-file")?.click()
-              }
-            >
-              Upload image
-            </Button>
-            <input
-              id="avatar-file"
-              type="file"
-              accept="image/jpeg,image/png,image/webp,image/gif"
-              className="hidden"
-              onChange={async (e) => {
-                const file = e.target.files?.[0];
-                if (!file) return;
-                const fd = new FormData();
-                fd.append("avatar", file);
-                try {
-                  const res = await fetch("/api/upload/avatar", {
-                    method: "POST",
-                    credentials: "include",
-                    body: fd,
-                  });
-                  const data = await res.json().catch(() => ({}));
-                  if (!res.ok || data.ok !== true)
-                    throw new Error(data.message || "Upload failed");
-                  if (data.student) setDraft((d) => ({ ...d, ...(data.student as Student) }));
-                  await refreshSession();
-                  toast({ kind: "success", title: "Photo updated" });
-                } catch {
-                  toast({
-                    kind: "error",
-                    title: "Upload failed",
-                    description: "Try a smaller JPG, PNG or WebP.",
-                  });
-                } finally {
-                  e.target.value = "";
-                }
-              }}
+        <div className="mb-4 flex flex-col items-start gap-4 sm:flex-row sm:items-start">
+          <div className="flex flex-col items-center gap-2">
+            <Avatar
+              src={resolveStudentAvatar(draft)}
+              name={draft.name}
+              size={72}
             />
-            <p className="mt-1 max-w-xs text-[11px] text-muted-foreground">
-              Saved as static files under{" "}
-              <span className="font-mono">public/uploads/avatars</span> (max ~2.5&nbsp;MB).
+            <p className="text-[11px] text-muted-foreground">Preview</p>
+          </div>
+          <div className="flex-1">
+            <Label className="text-xs">Choose an avatar</Label>
+            <p className="mb-2 mt-0.5 text-[11px] text-muted-foreground">
+              Pick one of six predefined avatars — clean, fast, no upload needed.
             </p>
+            <AvatarPicker
+              value={(draft.avatarId ?? null) as AvatarId | null}
+              onChange={(id) =>
+                setDraft((d) => ({ ...d, avatarId: id, profileImageUrl: null }))
+              }
+            />
           </div>
         </div>
         <Grid>

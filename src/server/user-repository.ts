@@ -120,6 +120,10 @@ export async function applyFailedLogin(
 }
 
 // ── Helpers used during signup + profile patch ──────────────────────────
+// Each replace* function does DELETE + ONE multi-row INSERT (instead of one
+// INSERT per row). For a typical signup with ~5 skills + 5 interests + 4
+// courses + a handful of openness labels this collapses ~16 round trips
+// down to ~6 — a major share of signup latency on a remote DB.
 
 async function replaceSkills(
   client: PoolClient,
@@ -127,16 +131,13 @@ async function replaceSkills(
   skills: string[],
 ) {
   await client.query("DELETE FROM user_skills WHERE user_id = $1", [userId]);
-  const seen = new Set<string>();
-  for (const s of skills) {
-    const trimmed = s.trim();
-    if (!trimmed || seen.has(trimmed)) continue;
-    seen.add(trimmed);
-    await client.query(
-      "INSERT INTO user_skills (user_id, skill) VALUES ($1, $2)",
-      [userId, trimmed],
-    );
-  }
+  const rows = dedupe(skills.map((s) => s.trim()).filter(Boolean));
+  if (!rows.length) return;
+  const values = rows.map((_, i) => `($1, $${i + 2})`).join(",");
+  await client.query(
+    `INSERT INTO user_skills (user_id, skill) VALUES ${values}`,
+    [userId, ...rows],
+  );
 }
 
 async function replaceInterests(
@@ -145,16 +146,13 @@ async function replaceInterests(
   items: string[],
 ) {
   await client.query("DELETE FROM user_interests WHERE user_id = $1", [userId]);
-  const seen = new Set<string>();
-  for (const s of items) {
-    const trimmed = s.trim();
-    if (!trimmed || seen.has(trimmed)) continue;
-    seen.add(trimmed);
-    await client.query(
-      "INSERT INTO user_interests (user_id, interest) VALUES ($1, $2)",
-      [userId, trimmed],
-    );
-  }
+  const rows = dedupe(items.map((s) => s.trim()).filter(Boolean));
+  if (!rows.length) return;
+  const values = rows.map((_, i) => `($1, $${i + 2})`).join(",");
+  await client.query(
+    `INSERT INTO user_interests (user_id, interest) VALUES ${values}`,
+    [userId, ...rows],
+  );
 }
 
 async function replaceOpenness(
@@ -163,15 +161,13 @@ async function replaceOpenness(
   labels: string[],
 ) {
   await client.query("DELETE FROM user_openness WHERE user_id = $1", [userId]);
-  const seen = new Set<string>();
-  for (const s of labels) {
-    if (!s || seen.has(s)) continue;
-    seen.add(s);
-    await client.query(
-      "INSERT INTO user_openness (user_id, label) VALUES ($1, $2)",
-      [userId, s],
-    );
-  }
+  const rows = dedupe(labels.filter(Boolean));
+  if (!rows.length) return;
+  const values = rows.map((_, i) => `($1, $${i + 2})`).join(",");
+  await client.query(
+    `INSERT INTO user_openness (user_id, label) VALUES ${values}`,
+    [userId, ...rows],
+  );
 }
 
 async function replaceEnrollments(
@@ -183,15 +179,22 @@ async function replaceEnrollments(
     userId,
   ]);
   const seen = new Set<string>();
+  const rows: CourseEnrollment[] = [];
   for (const e of items) {
     if (!e?.courseCode || seen.has(e.courseCode)) continue;
     seen.add(e.courseCode);
-    await client.query(
-      `INSERT INTO user_enrollments (user_id, course_code, section)
-       VALUES ($1, $2, $3)`,
-      [userId, e.courseCode, e.section],
-    );
+    rows.push(e);
   }
+  if (!rows.length) return;
+  const values = rows
+    .map((_, i) => `($1, $${i * 2 + 2}, $${i * 2 + 3})`)
+    .join(",");
+  const params: unknown[] = [userId];
+  for (const e of rows) params.push(e.courseCode, e.section);
+  await client.query(
+    `INSERT INTO user_enrollments (user_id, course_code, section) VALUES ${values}`,
+    params,
+  );
 }
 
 async function replacePortfolio(
@@ -207,23 +210,33 @@ async function replacePortfolio(
     [userId],
   );
   const seen = new Set<string>();
+  const rows: typeof items = [];
   for (const p of items) {
     if (!p?.id || seen.has(p.id)) continue;
     seen.add(p.id);
-    await client.query(
-      `INSERT INTO user_portfolio_projects (user_id, pid, title, description, year, tags_json, link)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
-      [
-        userId,
-        p.id,
-        p.title,
-        p.description ?? "",
-        p.year,
-        JSON.stringify(p.tags ?? []),
-        p.link ?? null,
-      ],
+    rows.push(p);
+  }
+  if (!rows.length) return;
+  const values: string[] = [];
+  const params: unknown[] = [userId];
+  for (const p of rows) {
+    const i = params.length;
+    values.push(
+      `($1, $${i + 1}, $${i + 2}, $${i + 3}, $${i + 4}, $${i + 5}::jsonb, $${i + 6})`,
+    );
+    params.push(
+      p.id,
+      p.title,
+      p.description ?? "",
+      p.year,
+      JSON.stringify(p.tags ?? []),
+      p.link ?? null,
     );
   }
+  await client.query(
+    `INSERT INTO user_portfolio_projects (user_id, pid, title, description, year, tags_json, link) VALUES ${values.join(",")}`,
+    params,
+  );
 }
 
 async function replaceAchievements(
@@ -238,22 +251,43 @@ async function replaceAchievements(
     userId,
   ]);
   const seen = new Set<string>();
+  const rows: typeof items = [];
   for (const a of items) {
     if (!a?.id || seen.has(a.id)) continue;
     seen.add(a.id);
-    await client.query(
-      `INSERT INTO user_achievements (user_id, aid, title, description, year, type)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [
-        userId,
-        a.id,
-        a.title,
-        a.description ?? null,
-        a.year,
-        a.type ?? "academic",
-      ],
+    rows.push(a);
+  }
+  if (!rows.length) return;
+  const values: string[] = [];
+  const params: unknown[] = [userId];
+  for (const a of rows) {
+    const i = params.length;
+    values.push(
+      `($1, $${i + 1}, $${i + 2}, $${i + 3}, $${i + 4}, $${i + 5})`,
+    );
+    params.push(
+      a.id,
+      a.title,
+      a.description ?? null,
+      a.year,
+      a.type ?? "academic",
     );
   }
+  await client.query(
+    `INSERT INTO user_achievements (user_id, aid, title, description, year, type) VALUES ${values.join(",")}`,
+    params,
+  );
+}
+
+function dedupe<T>(arr: T[]): T[] {
+  const seen = new Set<T>();
+  const out: T[] = [];
+  for (const v of arr) {
+    if (seen.has(v)) continue;
+    seen.add(v);
+    out.push(v);
+  }
+  return out;
 }
 
 export async function signupUser(
@@ -315,6 +349,7 @@ type ProfileRow = {
   vibe: string;
   is_mentor: boolean;
   avatar_storage_path: string | null;
+  avatar_id: string | null;
   github: string | null;
   linkedin: string | null;
   website: string | null;
@@ -325,65 +360,66 @@ export async function loadStudent(
   pool: Pool,
   userId: number,
 ): Promise<Student | null> {
-  const [uRes, pRes] = await Promise.all([
-    pool.query<{ id: number; student_id: string; handle: string }>(
-      "SELECT id, student_id, handle FROM users WHERE id = $1 LIMIT 1",
-      [userId],
-    ),
-    pool.query<ProfileRow>(
-      `SELECT display_name, department, faculty, semester, bio, vibe,
-              is_mentor, avatar_storage_path, github, linkedin, website, joined_at
-         FROM user_profiles WHERE user_id = $1 LIMIT 1`,
-      [userId],
-    ),
-  ]);
+  // Fire all 8 reads as one parallel batch instead of two sequential phases.
+  // For the typical "user exists" path (login/me/signup post-insert) this
+  // replaces 2 round-trip phases with 1, saving ~50–100 ms on Neon.
+  const [uRes, pRes, skRes, inRes, opRes, enRes, pjRes, achRes] =
+    await Promise.all([
+      pool.query<{ id: number; student_id: string; handle: string }>(
+        "SELECT id, student_id, handle FROM users WHERE id = $1 LIMIT 1",
+        [userId],
+      ),
+      pool.query<ProfileRow>(
+        `SELECT display_name, department, faculty, semester, bio, vibe,
+                is_mentor, avatar_storage_path, avatar_id, github, linkedin, website, joined_at
+           FROM user_profiles WHERE user_id = $1 LIMIT 1`,
+        [userId],
+      ),
+      pool.query<{ skill: string }>(
+        "SELECT skill FROM user_skills WHERE user_id = $1 ORDER BY skill ASC",
+        [userId],
+      ),
+      pool.query<{ interest: string }>(
+        "SELECT interest FROM user_interests WHERE user_id = $1 ORDER BY interest ASC",
+        [userId],
+      ),
+      pool.query<{ label: string }>(
+        "SELECT label FROM user_openness WHERE user_id = $1 ORDER BY label ASC",
+        [userId],
+      ),
+      pool.query<{ course_code: string; section: string }>(
+        `SELECT course_code, section FROM user_enrollments
+           WHERE user_id = $1 ORDER BY course_code ASC`,
+        [userId],
+      ),
+      pool.query<{
+        pid: string;
+        title: string;
+        description: string;
+        year: number;
+        tags_json: unknown;
+        link: string | null;
+      }>(
+        `SELECT pid, title, description, year, tags_json, link
+           FROM user_portfolio_projects WHERE user_id = $1 ORDER BY id DESC`,
+        [userId],
+      ),
+      pool.query<{
+        aid: string;
+        title: string;
+        description: string | null;
+        year: number;
+        type: Achievement["type"];
+      }>(
+        `SELECT aid, title, description, year, type
+           FROM user_achievements WHERE user_id = $1 ORDER BY id DESC`,
+        [userId],
+      ),
+    ]);
 
   const user = uRes.rows[0];
   const profileRow = pRes.rows[0];
   if (!user || !profileRow) return null;
-
-  const [skRes, inRes, opRes, enRes, pjRes, achRes] = await Promise.all([
-    pool.query<{ skill: string }>(
-      "SELECT skill FROM user_skills WHERE user_id = $1 ORDER BY skill ASC",
-      [userId],
-    ),
-    pool.query<{ interest: string }>(
-      "SELECT interest FROM user_interests WHERE user_id = $1 ORDER BY interest ASC",
-      [userId],
-    ),
-    pool.query<{ label: string }>(
-      "SELECT label FROM user_openness WHERE user_id = $1 ORDER BY label ASC",
-      [userId],
-    ),
-    pool.query<{ course_code: string; section: string }>(
-      `SELECT course_code, section FROM user_enrollments
-         WHERE user_id = $1 ORDER BY course_code ASC`,
-      [userId],
-    ),
-    pool.query<{
-      pid: string;
-      title: string;
-      description: string;
-      year: number;
-      tags_json: unknown;
-      link: string | null;
-    }>(
-      `SELECT pid, title, description, year, tags_json, link
-         FROM user_portfolio_projects WHERE user_id = $1 ORDER BY id DESC`,
-      [userId],
-    ),
-    pool.query<{
-      aid: string;
-      title: string;
-      description: string | null;
-      year: number;
-      type: Achievement["type"];
-    }>(
-      `SELECT aid, title, description, year, type
-         FROM user_achievements WHERE user_id = $1 ORDER BY id DESC`,
-      [userId],
-    ),
-  ]);
 
   const skills = skRes.rows.map((r) => r.skill);
   const interests = inRes.rows.map((r) => r.interest);
@@ -422,6 +458,10 @@ export async function loadStudent(
   const gh = profileRow.github;
   const li = profileRow.linkedin;
   const ws = profileRow.website;
+  const avatarId =
+    profileRow.avatar_id && typeof profileRow.avatar_id === "string"
+      ? (profileRow.avatar_id as Student["avatarId"])
+      : null;
 
   return {
     id: String(user.id),
@@ -456,6 +496,7 @@ export async function loadStudent(
         ? profileRow.joined_at
         : new Date(profileRow.joined_at).toISOString(),
     profileImageUrl,
+    avatarId,
   };
 }
 
@@ -508,6 +549,7 @@ export type ProfilePatchFlat = Partial<{
   bio: string;
   vibe: string;
   isMentor: boolean;
+  avatarId: string | null;
   github: string | null;
   linkedin: string | null;
   website: string | null;
@@ -555,6 +597,7 @@ export async function patchProfileDb(
     if (patch.bio != null) add("bio", patch.bio);
     if (patch.vibe != null) add("vibe", patch.vibe);
     if (patch.isMentor != null) add("is_mentor", !!patch.isMentor);
+    if (patch.avatarId !== undefined) add("avatar_id", patch.avatarId);
     if (patch.github !== undefined) add("github", patch.github);
     if (patch.linkedin !== undefined) add("linkedin", patch.linkedin);
     if (patch.website !== undefined) add("website", patch.website);

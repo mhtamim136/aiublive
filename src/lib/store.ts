@@ -5,12 +5,33 @@ import { persist, createJSONStorage } from "zustand/middleware";
 import type { ConnectionStatus, ProjectPost, Student } from "./types";
 import { mockProjects } from "./mock-data";
 
-type Message = {
-  id: string;
-  fromId: string;
-  toId: string;
-  text: string;
-  at: string;
+// ── Realtime / messaging types ──────────────────────────────────────────
+
+export type AppNotification = {
+  id: number;
+  kind:
+    | "connection-request"
+    | "connection-accepted"
+    | "message"
+    | "team-activity";
+  payload: Record<string, unknown>;
+  readAt: string | null;
+  createdAt: string;
+};
+
+export type AppMessage = {
+  id: number;
+  threadId: number;
+  senderId: number;
+  body: string;
+  createdAt: string;
+};
+
+export type ThreadSummary = {
+  threadId: number;
+  peerId: number;
+  lastMessageAt: string;
+  lastMessage: { id: number; senderId: number; body: string } | null;
 };
 
 export type LoginResult =
@@ -27,7 +48,8 @@ export type LoginResult =
 async function readJsonBody(res: Response): Promise<Record<string, unknown>> {
   try {
     const j: unknown = await res.json();
-    return typeof j === "object" && j !== null ? (j as Record<string, unknown>)
+    return typeof j === "object" && j !== null
+      ? (j as Record<string, unknown>)
       : {};
   } catch {
     return {};
@@ -35,47 +57,86 @@ async function readJsonBody(res: Response): Promise<Record<string, unknown>> {
 }
 
 type State = {
+  // ── Session ────────────────────────────────────────────────────────────
   me: Student | null;
   signedInId: string | null;
   hasOnboarded: boolean;
+  sessionChecked: boolean;
+  // ── Social graph ───────────────────────────────────────────────────────
   connections: Record<string, ConnectionStatus>;
   bookmarks: string[];
+  // ── Projects (local-only, persisted) ──────────────────────────────────
   projects: ProjectPost[];
-  threads: Record<string, Message[]>;
-  readNotifications: string[];
-  sessionChecked: boolean;
+  // ── Realtime (DB-backed) ──────────────────────────────────────────────
+  notifications: AppNotification[];
+  unreadCount: number;
+  threadSummaries: ThreadSummary[];
+  /** Per-peer message lists, keyed by peerId (string). */
+  threadMessages: Record<string, AppMessage[]>;
+  realtimeConnected: boolean;
+
+  // ── Auth actions ──────────────────────────────────────────────────────
   setMe: (s: Student, signedInId: string) => void;
   updateMe: (patch: Partial<Student>) => Promise<boolean>;
   signIn: (studentId: string, password: string) => Promise<LoginResult>;
   signOut: () => Promise<void>;
   reset: () => void;
   refreshSession: () => Promise<boolean>;
+
+  // ── Social actions ────────────────────────────────────────────────────
   requestConnection: (id: string) => Promise<void>;
   acceptConnection: (id: string) => Promise<void>;
   toggleBookmark: (id: string) => Promise<void>;
+
+  // ── Project actions ───────────────────────────────────────────────────
   createProject: (
-    p: Omit<ProjectPost, "id" | "createdAt" | "members" | "status" | "ownerId"> & {
-      ownerId?: string;
-    },
+    p: Omit<
+      ProjectPost,
+      "id" | "createdAt" | "members" | "status" | "ownerId"
+    > & { ownerId?: string },
   ) => ProjectPost;
   joinProject: (projectId: string, studentId: string) => void;
-  sendMessage: (toId: string, text: string) => void;
-  markNotificationsRead: (ids: string[]) => void;
-  markAllNotificationsRead: (ids: string[]) => void;
+
+  // ── Notifications ─────────────────────────────────────────────────────
+  loadNotifications: () => Promise<void>;
+  markAllNotificationsRead: () => Promise<void>;
+
+  // ── Messaging ─────────────────────────────────────────────────────────
+  loadThreads: () => Promise<void>;
+  loadMessagesWithPeer: (peerId: string) => Promise<void>;
+  sendMessage: (toId: string, body: string) => Promise<boolean>;
+
+  // ── Realtime fan-out (called by useRealtime hook) ─────────────────────
+  pushIncomingNotification: (n: AppNotification) => void;
+  pushIncomingMessage: (
+    msg: AppMessage & { peerId: number },
+  ) => void;
+  applyConnectionUpdate: (
+    peerId: number,
+    status: "pending" | "connected",
+  ) => void;
+  setRealtimeConnected: (on: boolean) => void;
 };
 
 export const useStore = create<State>()(
   persist(
     (set, get) => ({
+      // session
       me: null,
       signedInId: null,
       hasOnboarded: false,
+      sessionChecked: false,
+      // social
       connections: {},
       bookmarks: [],
+      // projects
       projects: mockProjects,
-      threads: {},
-      readNotifications: [],
-      sessionChecked: false,
+      // realtime
+      notifications: [],
+      unreadCount: 0,
+      threadSummaries: [],
+      threadMessages: {},
+      realtimeConnected: false,
 
       setMe: (s, signedInId) =>
         set({ me: s, signedInId, hasOnboarded: true }),
@@ -94,6 +155,10 @@ export const useStore = create<State>()(
               hasOnboarded: false,
               connections: {},
               bookmarks: [],
+              notifications: [],
+              unreadCount: 0,
+              threadSummaries: [],
+              threadMessages: {},
               sessionChecked: true,
             });
             return false;
@@ -102,10 +167,8 @@ export const useStore = create<State>()(
             me: data.student as Student,
             signedInId: String(data.signedStudentId ?? ""),
             hasOnboarded: true,
-            connections: (data.connections as Record<
-              string,
-              ConnectionStatus
-            >) ?? {},
+            connections:
+              (data.connections as Record<string, ConnectionStatus>) ?? {},
             bookmarks: (data.bookmarks as string[]) ?? [],
             sessionChecked: true,
           });
@@ -133,7 +196,7 @@ export const useStore = create<State>()(
           set({ me: data.student as Student });
           return true;
         } catch {
-          set({ me }); // rollback visuals
+          set({ me });
           return false;
         }
       },
@@ -156,10 +219,8 @@ export const useStore = create<State>()(
               me: data.student as Student,
               signedInId: String(data.signedStudentId ?? ""),
               hasOnboarded: true,
-              connections: (data.connections as Record<
-                string,
-                ConnectionStatus
-              >) ?? {},
+              connections:
+                (data.connections as Record<string, ConnectionStatus>) ?? {},
               bookmarks: (data.bookmarks as string[]) ?? [],
               sessionChecked: true,
             });
@@ -185,13 +246,13 @@ export const useStore = create<State>()(
                 "We couldn't find an account with that ID and password.",
             ),
             lockedUntil:
-              typeof data.lockedUntil === "number" ?
-                data.lockedUntil
-              : undefined,
+              typeof data.lockedUntil === "number"
+                ? data.lockedUntil
+                : undefined,
             remainingAttempts:
-              typeof data.remainingAttempts === "number" ?
-                data.remainingAttempts
-              : undefined,
+              typeof data.remainingAttempts === "number"
+                ? data.remainingAttempts
+                : undefined,
           };
         } catch {
           return {
@@ -217,6 +278,10 @@ export const useStore = create<State>()(
           hasOnboarded: false,
           connections: {},
           bookmarks: [],
+          notifications: [],
+          unreadCount: 0,
+          threadSummaries: [],
+          threadMessages: {},
           sessionChecked: true,
         });
       },
@@ -229,8 +294,10 @@ export const useStore = create<State>()(
           connections: {},
           bookmarks: [],
           projects: mockProjects,
-          threads: {},
-          readNotifications: [],
+          notifications: [],
+          unreadCount: 0,
+          threadSummaries: [],
+          threadMessages: {},
           sessionChecked: true,
         });
       },
@@ -253,10 +320,11 @@ export const useStore = create<State>()(
           const data = await readJsonBody(res);
           if (res.ok && data.ok === true) {
             set({
-              connections: (data.connections as Record<
-                string,
-                ConnectionStatus
-              >) ?? { ...get().connections, [id]: "pending" },
+              connections:
+                (data.connections as Record<string, ConnectionStatus>) ?? {
+                  ...get().connections,
+                  [id]: "pending",
+                },
             });
             return;
           }
@@ -288,10 +356,11 @@ export const useStore = create<State>()(
           const data = await readJsonBody(res);
           if (res.ok && data.ok === true) {
             set({
-              connections: (data.connections as Record<
-                string,
-                ConnectionStatus
-              >) ?? { ...get().connections, [id]: "connected" },
+              connections:
+                (data.connections as Record<string, ConnectionStatus>) ?? {
+                  ...get().connections,
+                  [id]: "connected",
+                },
             });
             return;
           }
@@ -307,8 +376,8 @@ export const useStore = create<State>()(
         const on = !get().bookmarks.includes(id);
         const prev = [...get().bookmarks];
         set((state) => ({
-          bookmarks: on ?
-              [...state.bookmarks, id]
+          bookmarks: on
+            ? [...state.bookmarks, id]
             : state.bookmarks.filter((x) => x !== id),
         }));
         if (!/^[0-9]+$/.test(id)) return;
@@ -354,46 +423,217 @@ export const useStore = create<State>()(
       joinProject: (projectId, studentId) =>
         set((state) => ({
           projects: state.projects.map((p) =>
-            p.id === projectId && !p.members.includes(studentId) ?
-              { ...p, members: [...p.members, studentId] }
-            : p,
+            p.id === projectId && !p.members.includes(studentId)
+              ? { ...p, members: [...p.members, studentId] }
+              : p,
           ),
         })),
 
-      sendMessage: (toId, text) =>
+      // ── Notifications ────────────────────────────────────────────────
+      loadNotifications: async () => {
+        try {
+          const res = await fetch("/api/notifications", {
+            credentials: "include",
+            cache: "no-store",
+          });
+          const data = await readJsonBody(res);
+          if (res.ok && data.ok === true) {
+            set({
+              notifications:
+                (data.notifications as AppNotification[]) ?? [],
+              unreadCount: Number(data.unread ?? 0),
+            });
+          }
+        } catch {
+          //
+        }
+      },
+
+      markAllNotificationsRead: async () => {
+        const prev = get().notifications;
+        // Optimistic — flip every readAt to "now".
+        const nowIso = new Date().toISOString();
+        set({
+          notifications: prev.map((n) =>
+            n.readAt ? n : { ...n, readAt: nowIso },
+          ),
+          unreadCount: 0,
+        });
+        try {
+          await fetch("/api/notifications", {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          });
+        } catch {
+          //
+        }
+      },
+
+      // ── Messaging ────────────────────────────────────────────────────
+      loadThreads: async () => {
+        try {
+          const res = await fetch("/api/messages/threads", {
+            credentials: "include",
+            cache: "no-store",
+          });
+          const data = await readJsonBody(res);
+          if (res.ok && data.ok === true) {
+            set({ threadSummaries: (data.threads as ThreadSummary[]) ?? [] });
+          }
+        } catch {
+          //
+        }
+      },
+
+      loadMessagesWithPeer: async (peerId) => {
+        if (!/^[0-9]+$/.test(peerId)) return;
+        try {
+          const res = await fetch(
+            `/api/messages?peer=${encodeURIComponent(peerId)}`,
+            { credentials: "include", cache: "no-store" },
+          );
+          const data = await readJsonBody(res);
+          if (res.ok && data.ok === true) {
+            set((state) => ({
+              threadMessages: {
+                ...state.threadMessages,
+                [peerId]: (data.messages as AppMessage[]) ?? [],
+              },
+            }));
+          }
+        } catch {
+          //
+        }
+      },
+
+      sendMessage: async (toId, body) => {
+        const me = get().me;
+        if (!me) return false;
+        const trimmed = body.trim();
+        if (!trimmed) return false;
+        if (!/^[0-9]+$/.test(toId)) return false;
+
+        const tempId = -Date.now();
+        const optimistic: AppMessage = {
+          id: tempId,
+          threadId: 0,
+          senderId: Number(me.id),
+          body: trimmed,
+          createdAt: new Date().toISOString(),
+        };
+        set((state) => ({
+          threadMessages: {
+            ...state.threadMessages,
+            [toId]: [...(state.threadMessages[toId] ?? []), optimistic],
+          },
+        }));
+
+        try {
+          const res = await fetch("/api/messages", {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ peerUserId: toId, body: trimmed }),
+          });
+          const data = await readJsonBody(res);
+          if (!res.ok || data.ok !== true) throw new Error("send failed");
+          const real = data.message as AppMessage;
+          set((state) => {
+            const list = state.threadMessages[toId] ?? [];
+            return {
+              threadMessages: {
+                ...state.threadMessages,
+                [toId]: list.map((m) => (m.id === tempId ? real : m)),
+              },
+              threadSummaries: bumpThreadSummary(
+                state.threadSummaries,
+                Number(toId),
+                real,
+              ),
+            };
+          });
+          return true;
+        } catch {
+          // Roll back the optimistic message on failure.
+          set((state) => ({
+            threadMessages: {
+              ...state.threadMessages,
+              [toId]: (state.threadMessages[toId] ?? []).filter(
+                (m) => m.id !== tempId,
+              ),
+            },
+          }));
+          return false;
+        }
+      },
+
+      // ── Realtime fan-out ─────────────────────────────────────────────
+      pushIncomingNotification: (n) =>
+        set((state) => ({
+          notifications: [n, ...state.notifications].slice(0, 60),
+          unreadCount: state.unreadCount + (n.readAt ? 0 : 1),
+        })),
+
+      pushIncomingMessage: (msg) =>
         set((state) => {
-          const me = state.me;
-          if (!me) return {};
-          const msg: Message = {
-            id: Math.random().toString(36).slice(2),
-            fromId: me.id,
-            toId,
-            text,
-            at: new Date().toISOString(),
-          };
-          const existing = state.threads[toId] ?? [];
+          const peerKey = String(msg.peerId);
+          const existing = state.threadMessages[peerKey] ?? [];
+          // Idempotent: skip if id already present (e.g. our own echo).
+          if (existing.some((m) => m.id === msg.id)) return state;
+          const nextMessages = [...existing, msg];
           return {
-            threads: { ...state.threads, [toId]: [...existing, msg] },
+            threadMessages: {
+              ...state.threadMessages,
+              [peerKey]: nextMessages,
+            },
+            threadSummaries: bumpThreadSummary(
+              state.threadSummaries,
+              msg.peerId,
+              msg,
+            ),
           };
         }),
 
-      markNotificationsRead: (ids) =>
+      applyConnectionUpdate: (peerId, status) =>
         set((state) => ({
-          readNotifications: Array.from(
-            new Set([...state.readNotifications, ...ids]),
-          ),
+          connections: {
+            ...state.connections,
+            [String(peerId)]: status,
+          },
         })),
-      markAllNotificationsRead: (ids) =>
-        set(() => ({ readNotifications: [...ids] })),
+
+      setRealtimeConnected: (on) => set({ realtimeConnected: on }),
     }),
     {
-      name: "aiub-live-store-v2-api",
+      name: "aiub-live-store-v3-realtime",
       partialize: (s) => ({
+        // Only the local-only `projects` survives reloads. Auth, social,
+        // notifications and messaging are all server-canonical now.
         projects: s.projects,
-        threads: s.threads,
-        readNotifications: s.readNotifications,
       }),
       storage: createJSONStorage(() => localStorage),
     },
   ),
 );
+
+function bumpThreadSummary(
+  list: ThreadSummary[],
+  peerId: number,
+  msg: AppMessage,
+): ThreadSummary[] {
+  const idx = list.findIndex((t) => t.peerId === peerId);
+  const updated: ThreadSummary = {
+    threadId: msg.threadId || (idx >= 0 ? list[idx].threadId : 0),
+    peerId,
+    lastMessageAt: msg.createdAt,
+    lastMessage: { id: msg.id, senderId: msg.senderId, body: msg.body },
+  };
+  if (idx >= 0) {
+    const next = list.slice();
+    next.splice(idx, 1);
+    return [updated, ...next];
+  }
+  return [updated, ...list];
+}

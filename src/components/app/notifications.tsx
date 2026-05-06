@@ -5,62 +5,93 @@ import Link from "next/link";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Bell,
-  BookOpen,
   CheckCheck,
-  Layers,
-  Lightbulb,
+  MessageSquare,
   Sparkles,
-  Sparkles as SparkleAlt,
+  UserCheck,
+  UserPlus,
+  Users2,
   X,
 } from "lucide-react";
-import { useStore } from "@/lib/store";
-import {
-  buildNotifications,
-  type AppNotification,
-} from "@/lib/notifications";
+import { useStore, type AppNotification } from "@/lib/store";
 import { cn, formatRelativeTime } from "@/lib/utils";
 
-const KIND_ICON: Record<AppNotification["kind"], React.ComponentType<{ className?: string }>> = {
-  match: Sparkles,
-  course: BookOpen,
-  project: Layers,
-  mentor: Lightbulb,
-  system: SparkleAlt,
+const KIND_ICON: Record<
+  AppNotification["kind"],
+  React.ComponentType<{ className?: string }>
+> = {
+  "connection-request": UserPlus,
+  "connection-accepted": UserCheck,
+  message: MessageSquare,
+  "team-activity": Users2,
 };
 
 const KIND_TONE: Record<AppNotification["kind"], string> = {
-  match: "bg-primary/10 text-primary",
-  course: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
-  project: "bg-accent/10 text-accent",
-  mentor: "bg-amber-500/10 text-amber-600 dark:text-amber-400",
-  system: "bg-muted text-muted-foreground",
+  "connection-request": "bg-primary/10 text-primary",
+  "connection-accepted": "bg-success/10 text-success",
+  message: "bg-accent/10 text-accent",
+  "team-activity": "bg-amber-500/10 text-amber-600 dark:text-amber-400",
 };
 
+function titleFor(n: AppNotification): string {
+  const peerName = String(n.payload?.peerName ?? "Someone");
+  switch (n.kind) {
+    case "connection-request":
+      return `${peerName} wants to connect`;
+    case "connection-accepted":
+      return `${peerName} accepted your request`;
+    case "message":
+      return `New message`;
+    case "team-activity":
+      return "Team activity";
+    default:
+      return "Notification";
+  }
+}
+
+function bodyFor(n: AppNotification): string {
+  switch (n.kind) {
+    case "connection-request":
+    case "connection-accepted": {
+      const handle = n.payload?.peerHandle
+        ? `@${String(n.payload.peerHandle)}`
+        : "";
+      return handle;
+    }
+    case "message":
+      return String(n.payload?.preview ?? "");
+    case "team-activity":
+      return String(n.payload?.summary ?? "");
+    default:
+      return "";
+  }
+}
+
+function hrefFor(n: AppNotification): string {
+  switch (n.kind) {
+    case "connection-request":
+      return "/connections";
+    case "connection-accepted":
+      return n.payload?.peerId
+        ? `/profile/${n.payload.peerId}`
+        : "/connections";
+    case "message":
+      return n.payload?.peerId
+        ? `/messages?to=${n.payload.peerId}`
+        : "/messages";
+    default:
+      return "/dashboard";
+  }
+}
+
 export function NotificationsBell() {
-  const me = useStore((s) => s.me);
-  const readIds = useStore((s) => s.readNotifications);
-  const markNotificationsRead = useStore((s) => s.markNotificationsRead);
-  const markAllNotificationsRead = useStore(
-    (s) => s.markAllNotificationsRead,
-  );
+  const notifications = useStore((s) => s.notifications);
+  const unread = useStore((s) => s.unreadCount);
+  const markAllRead = useStore((s) => s.markAllNotificationsRead);
 
   const [open, setOpen] = React.useState(false);
   const wrapRef = React.useRef<HTMLDivElement>(null);
 
-  const notifications = React.useMemo<AppNotification[]>(
-    () => (me ? buildNotifications(me) : []),
-    [me],
-  );
-
-  const unreadIds = React.useMemo(
-    () =>
-      notifications
-        .filter((n) => !readIds.includes(n.id))
-        .map((n) => n.id),
-    [notifications, readIds],
-  );
-
-  // Close on outside click
   React.useEffect(() => {
     if (!open) return;
     const onDoc = (e: MouseEvent) => {
@@ -78,12 +109,10 @@ export function NotificationsBell() {
     };
   }, [open]);
 
-  const allIds = notifications.map((n) => n.id);
-
   return (
     <div ref={wrapRef} className="relative">
       <button
-        aria-label={`Notifications${unreadIds.length ? `, ${unreadIds.length} unread` : ""}`}
+        aria-label={`Notifications${unread ? `, ${unread} unread` : ""}`}
         onClick={() => setOpen((v) => !v)}
         className={cn(
           "relative grid h-9 w-9 place-items-center rounded-xl border border-border bg-card text-muted-foreground transition hover:bg-muted/60 hover:text-foreground",
@@ -91,12 +120,12 @@ export function NotificationsBell() {
         )}
       >
         <Bell className="h-4 w-4" />
-        {unreadIds.length > 0 && (
+        {unread > 0 && (
           <span
             className="absolute -top-1 -right-1 grid h-4 min-w-[16px] place-items-center rounded-full bg-primary px-1 text-[10px] font-semibold leading-none text-primary-foreground shadow"
             aria-hidden
           >
-            {unreadIds.length > 9 ? "9+" : unreadIds.length}
+            {unread > 9 ? "9+" : unread}
           </span>
         )}
       </button>
@@ -118,16 +147,16 @@ export function NotificationsBell() {
                   <Bell className="h-3.5 w-3.5" />
                 </span>
                 <h3 className="text-sm font-semibold">Notifications</h3>
-                {unreadIds.length > 0 && (
+                {unread > 0 && (
                   <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
-                    {unreadIds.length} new
+                    {unread} new
                   </span>
                 )}
               </div>
               <div className="flex items-center gap-1">
-                {unreadIds.length > 0 && (
+                {unread > 0 && (
                   <button
-                    onClick={() => markAllNotificationsRead(allIds)}
+                    onClick={() => void markAllRead()}
                     className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground"
                   >
                     <CheckCheck className="h-3 w-3" />
@@ -147,12 +176,12 @@ export function NotificationsBell() {
             <div className="max-h-[28rem] overflow-y-auto">
               {notifications.length === 0 ? (
                 <p className="p-8 text-center text-sm text-muted-foreground">
-                  All caught up. Nothing new on campus right now.
+                  All caught up. We'll ping you the moment something happens.
                 </p>
               ) : (
                 <ul>
                   {notifications.map((n) => {
-                    const isRead = readIds.includes(n.id);
+                    const isRead = !!n.readAt;
                     const Icon = KIND_ICON[n.kind] ?? Sparkles;
                     return (
                       <li
@@ -160,11 +189,8 @@ export function NotificationsBell() {
                         className="border-b border-border last:border-b-0"
                       >
                         <Link
-                          href={n.href}
-                          onClick={() => {
-                            markNotificationsRead([n.id]);
-                            setOpen(false);
-                          }}
+                          href={hrefFor(n)}
+                          onClick={() => setOpen(false)}
                           className={cn(
                             "flex items-start gap-3 px-4 py-3 transition-colors hover:bg-muted/40",
                             !isRead && "bg-primary/[0.04]",
@@ -173,7 +199,7 @@ export function NotificationsBell() {
                           <span
                             className={cn(
                               "mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl",
-                              KIND_TONE[n.kind],
+                              KIND_TONE[n.kind] ?? "bg-muted text-muted-foreground",
                             )}
                           >
                             <Icon className="h-4 w-4" />
@@ -186,7 +212,7 @@ export function NotificationsBell() {
                                   isRead ? "font-medium" : "font-semibold",
                                 )}
                               >
-                                {n.title}
+                                {titleFor(n)}
                               </p>
                               {!isRead && (
                                 <span
@@ -195,11 +221,13 @@ export function NotificationsBell() {
                                 />
                               )}
                             </div>
-                            <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
-                              {n.body}
-                            </p>
+                            {bodyFor(n) && (
+                              <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+                                {bodyFor(n)}
+                              </p>
+                            )}
                             <p className="mt-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
-                              {formatRelativeTime(n.at)}
+                              {formatRelativeTime(n.createdAt)}
                             </p>
                           </div>
                         </Link>
@@ -212,7 +240,7 @@ export function NotificationsBell() {
 
             <footer className="border-t border-border bg-muted/20 px-4 py-2.5">
               <p className="text-center text-[11px] text-muted-foreground">
-                Calm by design — only useful pings. Tweak in{" "}
+                Real-time pings — no refresh needed. Tweak in{" "}
                 <Link
                   href="/settings"
                   onClick={() => setOpen(false)}

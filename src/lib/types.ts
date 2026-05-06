@@ -49,7 +49,9 @@ export type Student = {
   id: string; // app user id (numeric string from DB) or legacy mock ids
   /** Monotonic DB id (#) for display/search — optional on mock personas. */
   userNumber?: number;
-  /** Relative profile image (/uploads/...) when set — otherwise Dicebear by handle */
+  /** One of the predefined avatars (m1..f3). When set, takes precedence over profileImageUrl. */
+  avatarId?: import("./avatars").AvatarId | null;
+  /** Legacy uploaded avatar path — kept for back-compat with old accounts. */
   profileImageUrl?: string | null;
   name: string;
   handle: string;

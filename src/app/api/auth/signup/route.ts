@@ -4,7 +4,6 @@ import { hashPassword } from "@/server/password-auth";
 import {
   signupUser,
   fetchUserCredentials,
-  fetchUserStudentId,
   isHandleTaken,
   loadStudent,
 } from "@/server/user-repository";
@@ -54,12 +53,18 @@ export async function POST(req: Request) {
   }
 
   const pool = getPool();
+  const normalizedStudentId = normalizeStudentId(data.studentId);
 
   try {
-    const existed = await fetchUserCredentials(
-      pool,
-      normalizeStudentId(data.studentId),
-    );
+    // Run the two pre-checks AND the bcrypt hash in parallel — they're
+    // independent and bcrypt (cost 10) is the longest single step on the
+    // critical path. This overlaps ~120 ms of CPU with ~2 DB round trips.
+    const [existed, handleTaken, hash] = await Promise.all([
+      fetchUserCredentials(pool, normalizedStudentId),
+      isHandleTaken(pool, data.profile.handle),
+      hashPassword(data.password),
+    ]);
+
     if (existed) {
       return NextResponse.json({
         ok: false,
@@ -68,7 +73,7 @@ export async function POST(req: Request) {
           "An account already exists with this AIUB student ID. Sign in instead.",
       });
     }
-    if (await isHandleTaken(pool, data.profile.handle)) {
+    if (handleTaken) {
       return NextResponse.json({
         ok: false,
         code: "handle-taken",
@@ -76,7 +81,6 @@ export async function POST(req: Request) {
       });
     }
 
-    const hash = await hashPassword(data.password);
     let uid: number;
     try {
       uid = await signupUser(pool, data, hash);
@@ -93,7 +97,14 @@ export async function POST(req: Request) {
       throw err;
     }
 
-    const student = await loadStudent(pool, uid);
+    // Post-insert reads in one parallel batch (loadStudent is no longer
+    // awaited before the connections/bookmarks fan-out).
+    const [student, connections, bookmarks] = await Promise.all([
+      loadStudent(pool, uid),
+      loadConnectionMap(pool, uid),
+      listBookmarkTargetIds(pool, uid),
+    ]);
+
     if (!student) {
       return NextResponse.json(
         { ok: false, message: "Signup partially failed" },
@@ -101,16 +112,11 @@ export async function POST(req: Request) {
       );
     }
 
-    const [signedStudentId, connections, bookmarks] = await Promise.all([
-      fetchUserStudentId(pool, uid),
-      loadConnectionMap(pool, uid),
-      listBookmarkTargetIds(pool, uid),
-    ]);
-
     const res = NextResponse.json({
       ok: true,
       student,
-      signedStudentId,
+      // Reuse the normalized id we already computed instead of re-querying.
+      signedStudentId: normalizedStudentId,
       connections,
       bookmarks,
     });

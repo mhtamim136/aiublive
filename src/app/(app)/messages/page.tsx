@@ -6,14 +6,14 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, MessageSquare, Send } from "lucide-react";
 import { useStore } from "@/lib/store";
-import { mockStudents } from "@/lib/mock-data";
 import { Avatar } from "@/components/ui/avatar";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
-import { avatarUrl, cn, formatRelativeTime } from "@/lib/utils";
+import { cn, formatRelativeTime, resolveStudentAvatar } from "@/lib/utils";
 import { PageHeader } from "@/components/app/page-header";
 import { Badge } from "@/components/ui/badge";
+import type { Student } from "@/lib/types";
 
 export default function MessagesPage() {
   return (
@@ -25,57 +25,139 @@ export default function MessagesPage() {
 
 function Inner() {
   const me = useStore((s) => s.me);
-  const threads = useStore((s) => s.threads);
+  const threadSummaries = useStore((s) => s.threadSummaries);
+  const threadMessages = useStore((s) => s.threadMessages);
   const connections = useStore((s) => s.connections);
   const sendMessage = useStore((s) => s.sendMessage);
+  const loadThreads = useStore((s) => s.loadThreads);
+  const loadMessagesWithPeer = useStore((s) => s.loadMessagesWithPeer);
+
   const params = useSearchParams();
   const router = useRouter();
 
   const queryTo = params.get("to");
-  const threadIds = Object.keys(threads);
-  const connectedIds = Object.entries(connections)
-    .filter(([, st]) => st === "connected")
-    .map(([id]) => id);
+  const connectedIds = React.useMemo(
+    () =>
+      Object.entries(connections)
+        .filter(([, st]) => st === "connected")
+        .map(([id]) => id)
+        .filter((x) => /^[0-9]+$/.test(x)),
+    [connections],
+  );
 
-  // The full list of conversation candidates: existing threads + connected
-  const candidateIds = Array.from(new Set([...threadIds, ...connectedIds]));
+  // Candidate ids = existing thread peers (DB) ∪ connected users.
+  const candidateIds = React.useMemo(() => {
+    const ids = new Set<string>();
+    threadSummaries.forEach((t) => ids.add(String(t.peerId)));
+    connectedIds.forEach((id) => ids.add(id));
+    return Array.from(ids);
+  }, [threadSummaries, connectedIds]);
+
   const [activeId, setActiveId] = React.useState<string | null>(
     queryTo ?? candidateIds[0] ?? null,
   );
 
+  // Sync the URL → active id (one-way, when navigated to /messages?to=X).
   React.useEffect(() => {
     if (queryTo && queryTo !== activeId) setActiveId(queryTo);
   }, [queryTo, activeId]);
 
+  // First load — pull thread list (also done by useRealtime, but harmless).
+  React.useEffect(() => {
+    void loadThreads();
+  }, [loadThreads]);
+
+  // Whenever the active thread changes, hydrate its messages from the API
+  // (idempotent — re-fetching just refreshes the snapshot).
+  React.useEffect(() => {
+    if (activeId && /^[0-9]+$/.test(activeId)) {
+      void loadMessagesWithPeer(activeId);
+    }
+  }, [activeId, loadMessagesWithPeer]);
+
+  // Resolve peer student info via /api/users/batch (handle, name, avatar).
+  const [students, setStudents] = React.useState<Record<string, Student>>({});
+  React.useEffect(() => {
+    if (candidateIds.length === 0) {
+      setStudents({});
+      return;
+    }
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/users/batch?ids=${encodeURIComponent(candidateIds.join(","))}`,
+          { credentials: "include", cache: "no-store" },
+        );
+        const data = (await res.json().catch(() => ({}))) as {
+          ok?: boolean;
+          students?: Student[];
+        };
+        if (!alive || data.ok !== true) return;
+        const map: Record<string, Student> = {};
+        (data.students ?? []).forEach((s) => {
+          map[s.id] = s;
+        });
+        setStudents(map);
+      } catch {
+        if (alive) setStudents({});
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [candidateIds]);
+
+  // Auto-scroll the chat view to bottom when messages change.
+  const messagesRef = React.useRef<HTMLDivElement>(null);
+  const activeMessages = activeId ? threadMessages[activeId] ?? [] : [];
+  React.useEffect(() => {
+    const el = messagesRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [activeMessages.length, activeId]);
+
   if (!me) return null;
 
-  const activeStudent = activeId
-    ? mockStudents.find((s) => s.id === activeId)
-    : null;
-  const activeThread = activeId ? threads[activeId] ?? [] : [];
+  const activeStudent = activeId ? students[activeId] : null;
   const isConnected = activeId && connections[activeId] === "connected";
 
-  const sortedCandidates = candidateIds
-    .map((id) => mockStudents.find((s) => s.id === id))
-    .filter(Boolean) as typeof mockStudents;
+  // Order candidates by most-recent message (threadSummaries is already sorted).
+  const orderedCandidates = (() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const t of threadSummaries) {
+      const k = String(t.peerId);
+      if (!seen.has(k)) {
+        seen.add(k);
+        out.push(k);
+      }
+    }
+    for (const c of connectedIds) {
+      if (!seen.has(c)) {
+        seen.add(c);
+        out.push(c);
+      }
+    }
+    return out;
+  })();
 
   return (
     <div className="space-y-6">
       <PageHeader
         eyebrow="Messages"
         title="Focused conversations only"
-        description="DMs are unlocked once you're connected. Conversations stay in context, not in chaos."
+        description="DMs are unlocked once you're connected. Live updates — no refresh needed."
       />
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[320px_1fr]">
-        {/* Threads list */}
         <aside
           className={cn(
             "rounded-2xl border border-border bg-card p-2",
             activeStudent ? "hidden lg:block" : "block",
           )}
         >
-          {sortedCandidates.length === 0 ? (
+          {orderedCandidates.length === 0 ? (
             <EmptyState
               icon={<MessageSquare className="h-5 w-5" />}
               title="Nothing here yet"
@@ -89,28 +171,32 @@ function Inner() {
             />
           ) : (
             <ul className="max-h-[60vh] overflow-y-auto p-1">
-              {sortedCandidates.map((s) => {
-                const thread = threads[s.id] ?? [];
-                const last = thread[thread.length - 1];
+              {orderedCandidates.map((peerId) => {
+                const s = students[peerId];
+                if (!s) return null;
+                const summary = threadSummaries.find(
+                  (t) => String(t.peerId) === peerId,
+                );
+                const last = summary?.lastMessage ?? null;
                 return (
-                  <li key={s.id}>
+                  <li key={peerId}>
                     <button
                       onClick={() => {
-                        setActiveId(s.id);
-                        router.replace(`/messages?to=${s.id}`, {
+                        setActiveId(peerId);
+                        router.replace(`/messages?to=${peerId}`, {
                           scroll: false,
                         });
                       }}
                       className={cn(
                         "flex w-full items-center gap-3 rounded-xl p-2 text-left transition-colors",
-                        activeId === s.id
+                        activeId === peerId
                           ? "bg-foreground text-background"
                           : "hover:bg-muted/60",
                       )}
                     >
                       <Avatar
                         name={s.name}
-                        src={avatarUrl(s.handle)}
+                        src={resolveStudentAvatar(s)}
                         size={40}
                       />
                       <div className="min-w-0 flex-1">
@@ -120,28 +206,28 @@ function Inner() {
                         <p
                           className={cn(
                             "truncate text-xs",
-                            activeId === s.id
+                            activeId === peerId
                               ? "text-background/70"
                               : "text-muted-foreground",
                           )}
                         >
                           {last
-                            ? `${last.fromId === me.id ? "You: " : ""}${last.text}`
-                            : connections[s.id] === "connected"
+                            ? `${last.senderId === Number(me.id) ? "You: " : ""}${last.body}`
+                            : connections[peerId] === "connected"
                               ? "Say hi 👋"
                               : "Connect to message"}
                         </p>
                       </div>
-                      {last && (
+                      {summary?.lastMessageAt && (
                         <span
                           className={cn(
                             "ml-2 shrink-0 text-[10px]",
-                            activeId === s.id
+                            activeId === peerId
                               ? "text-background/60"
                               : "text-muted-foreground",
                           )}
                         >
-                          {formatRelativeTime(last.at)}
+                          {formatRelativeTime(summary.lastMessageAt)}
                         </span>
                       )}
                     </button>
@@ -152,7 +238,6 @@ function Inner() {
           )}
         </aside>
 
-        {/* Active thread */}
         <section
           className={cn(
             "flex min-h-[60vh] flex-col rounded-2xl border border-border bg-card",
@@ -180,7 +265,7 @@ function Inner() {
                 </Button>
                 <Avatar
                   name={activeStudent.name}
-                  src={avatarUrl(activeStudent.handle)}
+                  src={resolveStudentAvatar(activeStudent)}
                   size={36}
                   ring
                 />
@@ -200,16 +285,19 @@ function Inner() {
                 )}
               </header>
 
-              <div className="flex-1 space-y-3 overflow-y-auto p-4">
-                {activeThread.length === 0 ? (
+              <div
+                ref={messagesRef}
+                className="flex-1 space-y-3 overflow-y-auto p-4"
+              >
+                {activeMessages.length === 0 ? (
                   <p className="mx-auto mt-12 max-w-xs text-center text-sm text-muted-foreground">
                     {isConnected
                       ? "No messages yet. A short, kind hello goes a long way."
                       : "You'll be able to message after they accept your connection request."}
                   </p>
                 ) : (
-                  activeThread.map((m) => {
-                    const mine = m.fromId === me.id;
+                  activeMessages.map((m) => {
+                    const mine = m.senderId === Number(me.id);
                     return (
                       <div
                         key={m.id}
@@ -226,7 +314,7 @@ function Inner() {
                               : "bg-muted text-foreground",
                           )}
                         >
-                          {m.text}
+                          {m.body}
                           <span
                             className={cn(
                               "ml-2 text-[10px]",
@@ -235,7 +323,7 @@ function Inner() {
                                 : "text-muted-foreground",
                             )}
                           >
-                            {formatRelativeTime(m.at)}
+                            {formatRelativeTime(m.createdAt)}
                           </span>
                         </div>
                       </div>
@@ -246,9 +334,9 @@ function Inner() {
 
               <Composer
                 disabled={!isConnected}
-                onSend={(text) => {
+                onSend={async (text) => {
                   if (!activeId) return;
-                  sendMessage(activeId, text);
+                  await sendMessage(activeId, text);
                 }}
                 placeholder={
                   isConnected
@@ -269,16 +357,22 @@ function Composer({
   disabled,
   placeholder,
 }: {
-  onSend: (text: string) => void;
+  onSend: (text: string) => void | Promise<void>;
   disabled?: boolean;
   placeholder?: string;
 }) {
   const [text, setText] = React.useState("");
-  const submit = () => {
+  const [busy, setBusy] = React.useState(false);
+  const submit = async () => {
     const v = text.trim();
-    if (!v) return;
-    onSend(v);
-    setText("");
+    if (!v || busy) return;
+    setText(""); // clear immediately for snappy UX
+    setBusy(true);
+    try {
+      await onSend(v);
+    } finally {
+      setBusy(false);
+    }
   };
   return (
     <div className="flex items-center gap-2 border-t border-border p-3">
@@ -288,16 +382,16 @@ function Composer({
         onKeyDown={(e) => {
           if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
-            submit();
+            void submit();
           }
         }}
         placeholder={placeholder}
-        disabled={disabled}
+        disabled={disabled || busy}
         className="flex-1"
       />
       <Button
-        onClick={submit}
-        disabled={disabled || !text.trim()}
+        onClick={() => void submit()}
+        disabled={disabled || busy || !text.trim()}
         leftIcon={<Send className="h-4 w-4" />}
       >
         Send

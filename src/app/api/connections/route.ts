@@ -8,6 +8,9 @@ import {
   createConnectionRequest,
   loadConnectionMap,
 } from "@/server/social-repository";
+import { createNotification } from "@/server/notifications-repository";
+import { emitToUser } from "@/server/realtime";
+import { loadStudent } from "@/server/user-repository";
 
 export const runtime = "nodejs";
 
@@ -56,8 +59,25 @@ export async function POST(req: Request) {
 
     if (b.data.action === "accept-incoming") {
       await acceptConnectionByPeer(pool, uid, peerId);
+      // Notify the original requester that their request is now accepted.
+      const meStudent = await loadStudent(pool, uid);
+      void createNotification(pool, peerId, "connection-accepted", {
+        peerId: uid,
+        peerName: meStudent?.name ?? "",
+        peerHandle: meStudent?.handle ?? "",
+      }).catch((err) =>
+        console.error("[connections] notify accepted failed:", err),
+      );
+      emitToUser(peerId, {
+        type: "connection-update",
+        data: { peerId: uid, status: "connected" },
+      });
     } else if (b.data.action === "complete-outgoing-demo") {
       await completeOutgoingRequestAsConnected(pool, uid, peerId);
+      emitToUser(peerId, {
+        type: "connection-update",
+        data: { peerId: uid, status: "connected" },
+      });
     } else {
       const ok = await createConnectionRequest(pool, uid, peerId);
       if (!ok) {
@@ -70,6 +90,19 @@ export async function POST(req: Request) {
           { status: 409 },
         );
       }
+      // Notify the recipient that they have a new connection request.
+      const meStudent = await loadStudent(pool, uid);
+      void createNotification(pool, peerId, "connection-request", {
+        peerId: uid,
+        peerName: meStudent?.name ?? "",
+        peerHandle: meStudent?.handle ?? "",
+      }).catch((err) =>
+        console.error("[connections] notify request failed:", err),
+      );
+      emitToUser(peerId, {
+        type: "connection-update",
+        data: { peerId: uid, status: "pending" },
+      });
     }
 
     const connections = await loadConnectionMap(pool, uid);

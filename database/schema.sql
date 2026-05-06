@@ -42,12 +42,16 @@ CREATE TABLE IF NOT EXISTS user_profiles (
   bio VARCHAR(560) NOT NULL DEFAULT '',
   vibe VARCHAR(160) NOT NULL DEFAULT '',
   is_mentor BOOLEAN NOT NULL DEFAULT FALSE,
-  avatar_storage_path VARCHAR(512),
+  avatar_storage_path VARCHAR(512), -- legacy upload path (kept for back-compat)
+  avatar_id VARCHAR(8),             -- one of m1..m3 / f1..f3 (predefined)
   github VARCHAR(512),
   linkedin VARCHAR(512),
   website VARCHAR(512),
   joined_at TIMESTAMPTZ NOT NULL
 );
+
+-- Safety net for databases created before avatar_id existed.
+ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS avatar_id VARCHAR(8);
 
 CREATE TABLE IF NOT EXISTS user_skills (
   user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -164,3 +168,47 @@ CREATE TABLE IF NOT EXISTS team_project_members (
   member_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   PRIMARY KEY (post_db_id, member_user_id)
 );
+
+-- ── Realtime notifications (persisted; SSE pushes the live event) ────────
+CREATE TABLE IF NOT EXISTS notifications (
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  -- 'connection-request' | 'connection-accepted' | 'message' | 'team-activity'
+  kind VARCHAR(32) NOT NULL,
+  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  read_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Most-common access pattern is "list my recent notifications".
+CREATE INDEX IF NOT EXISTS idx_notifications_user_created_desc
+  ON notifications(user_id, created_at DESC);
+
+-- ── Direct-message threads + messages ────────────────────────────────────
+-- One row per ordered pair (user_a_id < user_b_id). The CHECK enforces the
+-- canonical ordering so we can use a simple unique constraint instead of
+-- juggling two-way lookups in the application layer.
+CREATE TABLE IF NOT EXISTS message_threads (
+  id BIGSERIAL PRIMARY KEY,
+  user_a_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_b_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_message_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT chk_thread_pair_order CHECK (user_a_id < user_b_id),
+  CONSTRAINT uq_thread_pair UNIQUE (user_a_id, user_b_id)
+);
+
+-- Find threads either side participates in:
+CREATE INDEX IF NOT EXISTS idx_threads_user_a ON message_threads(user_a_id, last_message_at DESC);
+CREATE INDEX IF NOT EXISTS idx_threads_user_b ON message_threads(user_b_id, last_message_at DESC);
+
+CREATE TABLE IF NOT EXISTS messages (
+  id BIGSERIAL PRIMARY KEY,
+  thread_id BIGINT NOT NULL REFERENCES message_threads(id) ON DELETE CASCADE,
+  sender_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  body TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_thread_created
+  ON messages(thread_id, created_at DESC);

@@ -85,6 +85,7 @@ export async function PATCH(req: Request) {
       bio: b.bio,
       vibe: b.vibe,
       isMentor: b.isMentor,
+      avatarId: b.avatarId,
       github:
         b.github !== undefined ? empt(b.github) : undefined,
       linkedin:
